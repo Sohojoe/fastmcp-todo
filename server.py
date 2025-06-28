@@ -520,10 +520,13 @@ def save_tasks(tasks):
 # =============================================================================
 
 if __name__ == "__main__":
-    # For local development
-    mcp.run()
+    import os
     
-    # For deployment (uncomment and modify as needed):
-    # import os
-    # port = int(os.getenv("PORT", 8000))
-    # mcp.run(transport="sse", host="0.0.0.0", port=port)
+    # Check if we're in a deployment environment (Railway sets PORT)
+    port = os.getenv("PORT")
+    if port:
+        # For deployment (Railway, Heroku, etc.)
+        mcp.run(transport="sse", host="0.0.0.0", port=int(port))
+    else:
+        # For local development and MCP
+        mcp.run()
