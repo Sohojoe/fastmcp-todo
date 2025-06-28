@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: fastmcp-todo
+    env: python
+    buildCommand: |
+      curl -LsSf https://astral.sh/uv/install.sh | sh
+      source $HOME/.cargo/env
+      uv sync --frozen && uv cache prune --ci
+    startCommand: uv run server.py
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
