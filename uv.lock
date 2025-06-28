@@ -148,20 +148,6 @@ wheels = [
 ]
 
 [[package]]
-name = "fastapi"
-version = "0.115.14"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pydantic" },
-    { name = "starlette" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ca/53/8c38a874844a8b0fa10dd8adf3836ac154082cf88d3f22b544e9ceea0a15/fastapi-0.115.14.tar.gz", hash = "sha256:b1de15cdc1c499a4da47914db35d0e4ef8f1ce62b624e94e0e5824421df99739", size = 296263 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/50/b1222562c6d270fea83e9c9075b8e8600b8479150a18e4516a6138b980d1/fastapi-0.115.14-py3-none-any.whl", hash = "sha256:6c0c8bf9420bd58f565e585036d971872472b4f7d3f6c73b698e10cffdefb3ca", size = 95514 },
-]
-
-[[package]]
 name = "fastmcp"
 version = "2.9.2"
 source = { registry = "https://pypi.org/simple" }
@@ -178,33 +164,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/68/17/d2b5981180717e6e689d0aaa6215d1ddcec6cb065c6f6b45c471ab7d2edb/fastmcp-2.9.2.tar.gz", hash = "sha256:c000eb0a2d50afcc7d26be4c867abf5c995ca0e0119f17417d50f61e2e17347c", size = 2663824 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/89/60/223e1975e65ed7c6cead0fda947d4cdb4f7ee5ec60a7c8ea3b3787868f67/fastmcp-2.9.2-py3-none-any.whl", hash = "sha256:3626a3d9b1fa6325756273b6d1fe1ec610baafec957ac22f7aa1dc17c1db8b93", size = 162690 },
-]
-
-[[package]]
-name = "fastmcp-todo"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "fastapi" },
-    { name = "fastmcp" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.100.0" },
-    { name = "fastmcp", specifier = ">=2.9.2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", specifier = ">=0.23.0" },
 ]
 
 [[package]]
@@ -522,14 +481,38 @@ wheels = [
 
 [[package]]
 name = "starlette"
-version = "0.46.2"
+version = "0.47.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ce/20/08dfcd9c983f6a6f4a1000d934b9e6d626cff8d2eeb77a89a68eef20a2b7/starlette-0.46.2.tar.gz", hash = "sha256:7f7361f34eed179294600af672f565727419830b54b7b084efe44bb82d2fccd5", size = 2580846 }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/69/662169fdb92fb96ec3eaee218cf540a629d629c86d7993d9651226a6789b/starlette-0.47.1.tar.gz", hash = "sha256:aef012dd2b6be325ffa16698f9dc533614fb1cebd593a906b90dc1025529a79b", size = 2583072 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/0c/9d30a4ebeb6db2b25a841afbb80f6ef9a854fc3b41be131d249a977b4959/starlette-0.46.2-py3-none-any.whl", hash = "sha256:595633ce89f8ffa71a015caed34a5b2dc1c0cdb3f0f1fbd1e69339cf2abeec35", size = 72037 },
+    { url = "https://files.pythonhosted.org/packages/82/95/38ef0cd7fa11eaba6a99b3c4f5ac948d8bc6ff199aabd327a29cc000840c/starlette-0.47.1-py3-none-any.whl", hash = "sha256:5e11c9f5c7c3f24959edbf2dffdc01bba860228acf657129467d8a7468591527", size = 72747 },
+]
+
+[[package]]
+name = "todo-server-app"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastmcp" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "fastmcp", specifier = ">=2.9.2" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23.0" },
 ]
 
 [[package]]
@@ -570,13 +553,13 @@ wheels = [
 
 [[package]]
 name = "uvicorn"
-version = "0.34.3"
+version = "0.35.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "h11" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/ad/713be230bcda622eaa35c28f0d328c3675c371238470abdea52417f17a8e/uvicorn-0.34.3.tar.gz", hash = "sha256:35919a9a979d7a59334b6b10e05d77c1d0d574c50e0fc98b8b1a0f165708b55a", size = 76631 }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/42/e0e305207bb88c6b8d3061399c6a961ffe5fbb7e2aa63c9234df7259e9cd/uvicorn-0.35.0.tar.gz", hash = "sha256:bc662f087f7cf2ce11a1d7fd70b90c9f98ef2e2831556dd078d131b96cc94a01", size = 78473 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6d/0d/8adfeaa62945f90d19ddc461c55f4a50c258af7662d34b6a3d5d1f8646f6/uvicorn-0.34.3-py3-none-any.whl", hash = "sha256:16246631db62bdfbf069b0645177d6e8a77ba950cfedbfd093acef9444e4d885", size = 62431 },
+    { url = "https://files.pythonhosted.org/packages/d2/e2/dc81b1bd1dcfe91735810265e9d26bc8ec5da45b4c0f6237e286819194c3/uvicorn-0.35.0-py3-none-any.whl", hash = "sha256:197535216b25ff9b785e29a0b79199f55222193d47f820816e7da751e9bc8d4a", size = 66406 },
 ]

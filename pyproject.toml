@@ -1,5 +1,5 @@
 [project]
-name = "fastmcp-todo"
+name = "todo-server-app"
 version = "0.1.0"
 description = "A todo management server built with FastMCP 2"
 readme = "README.md"
@@ -7,6 +7,13 @@ requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=2.9.2",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
 
 [tool.uv]
 dev-dependencies = [
