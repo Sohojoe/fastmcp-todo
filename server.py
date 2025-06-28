@@ -523,7 +523,7 @@ if __name__ == "__main__":
     import os
     
     # Check if we're in a deployment environment (Railway sets PORT)
-    port = os.getenv("PORT", 8080)
+    port = int(os.getenv("PORT", 8080))
     print(f"Starting MCP server on port {port}...")
     if port:
         # For deployment (Railway, Heroku, etc.)
