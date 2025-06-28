@@ -212,11 +212,11 @@ mcp = FastMCP(
 @mcp.tool
 def create_todo(
     title: str,
-    description: str = None,
+    description: Optional[str] = None,
     priority: str = "medium",
-    category: str = None,
-    due_date: str = None,
-    tags: str = None
+    category: Optional[str] = None,
+    due_date: Optional[str] = None,
+    tags: Optional[str] = None
 ) -> dict:
     """
     Create a new todo item.
@@ -278,10 +278,10 @@ def create_todo(
 
 @mcp.tool
 def list_todos(
-    status: str = None,
-    category: str = None,
-    priority: str = None,
-    tag: str = None,
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    priority: Optional[str] = None,
+    tag: Optional[str] = None,
     limit: int = 50
 ) -> dict:
     """
@@ -361,13 +361,13 @@ def get_todo(todo_id: int) -> dict:
 @mcp.tool
 def update_todo(
     todo_id: int,
-    title: str = None,
-    description: str = None,
-    priority: str = None,
-    status: str = None,
-    category: str = None,
-    due_date: str = None,
-    tags: str = None
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    priority: Optional[str] = None,
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    due_date: Optional[str] = None,
+    tags: Optional[str] = None
 ) -> dict:
     """
     Update an existing todo item.
@@ -431,6 +431,9 @@ def update_todo(
     # Update the todo
     updated_todo = todo_manager.update_todo(todo_id, **updates)
     
+    if not updated_todo:
+        return {"error": f"Failed to update todo with ID {todo_id}"}
+    
     return {
         "success": True,
         "todo": updated_todo.model_dump(mode='json'),
@@ -453,6 +456,9 @@ def complete_todo(todo_id: int) -> dict:
         return {"error": f"Todo with ID {todo_id} not found"}
     
     updated_todo = todo_manager.update_todo(todo_id, status=Status.COMPLETED)
+    
+    if not updated_todo:
+        return {"error": f"Failed to update todo with ID {todo_id}"}
     
     return {
         "success": True,
