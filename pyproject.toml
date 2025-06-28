@@ -1,0 +1,19 @@
+[project]
+name = "fastmcp-todo"
+version = "0.1.0"
+description = "A todo management server built with FastMCP 2"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.9.2",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
