@@ -519,9 +519,12 @@ def save_tasks(tasks):
 
 import os
 
-# Determine port and initialize MCP transport app early
+# Determine port and get the FastAPI app for deployment
 port = int(os.getenv("PORT", 8000))
-app = mcp.transport("http", host="0.0.0.0", port=port)  # type: ignore
+
+# For FastMCP 2.x, we need to run the server differently
+# The mcp instance itself can be run as an ASGI app
+app = mcp
 
 if __name__ == "__main__":
     print(f"Running MCP locally on port {port}")
