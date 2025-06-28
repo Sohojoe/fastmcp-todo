@@ -529,10 +529,10 @@ if __name__ == "__main__":
         # Run in stdio mode for local MCP clients
         mcp.run()
     else:
-        # Run in SSE mode for remote connections (like Claude web)
-        print(f"Running MCP SSE server on port {port}")
+        # Run in HTTP mode for remote connections (like Claude web)
+        print(f"Running MCP HTTP server on port {port}")
         asyncio.run(
-            mcp.run_sse_async(
+            mcp.run_http_async(
                 host="0.0.0.0",
                 port=port,
                 log_level="debug"
