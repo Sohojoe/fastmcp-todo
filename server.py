@@ -518,59 +518,23 @@ def save_tasks(tasks):
     """Save tasks to JSON file."""
     TASKS_FILE.write_text(json.dumps(tasks, indent=2))
 
-
-import os
-# Optionally add CORS middleware for flexibility
-from starlette.middleware.cors import CORSMiddleware
-
-# Determine port and get the FastAPI app for deployment
-port = int(os.getenv("PORT", 8080))
-
-# For FastMCP 2.x we expose a Starlette app
-# using the FastMCP http_app helper
-app = mcp.http_app()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-)
-
-# Add missing endpoints that Claude expects
-from starlette.routing import Route
-from starlette.responses import JSONResponse
-
-async def register_endpoint(request):
-    return JSONResponse({
-        "status": "success",
-        "mcp_endpoint": "/mcp/"
-    })
-
-async def oauth_discovery(request):
-    return JSONResponse({"error": "not_supported"}, status_code=404)
-
-# Add the routes to the app
-app.routes.extend([
-    Route("/register", register_endpoint, methods=["POST"]),
-    Route("/.well-known/oauth-authorization-server", oauth_discovery, methods=["GET"]),
-])
-
 if __name__ == "__main__":
-    # Auto-detect environment and run mode
-    # Check if stdin is connected to a terminal (interactive) or pipe (MCP)
+    import asyncio
     
-    # MCP servers are typically run with stdin/stdout pipes, not interactive terminals
-    is_stdio_mode = not sys.stdin.isatty()
+    port = int(os.getenv("PORT", 8080))
     is_deployment = os.getenv("PORT") is not None or os.getenv("RAILWAY_ENVIRONMENT") is not None
+    is_stdio_mode = not sys.stdin.isatty() and not is_deployment
     
-    if is_stdio_mode and not is_deployment:
-        # Run in stdio mode for MCP (when stdin is piped and not in deployment)
+    if is_stdio_mode:
+        # Run in stdio mode for local MCP clients
         mcp.run()
-    elif is_deployment:
-        # Run in HTTP mode for deployment (Railway, Render, etc.)
-        print(f"Running MCP HTTP server for deployment on port {port}")
-        uvicorn.run(app, host="0.0.0.0", port=port)
     else:
-        # Default to HTTP mode for local development
-        print(f"Running MCP locally on port {port}")
-        uvicorn.run(app, host="0.0.0.0", port=port, reload=True)
+        # Run in SSE mode for remote connections (like Claude web)
+        print(f"Running MCP SSE server on port {port}")
+        asyncio.run(
+            mcp.run_sse_async(
+                host="0.0.0.0",
+                port=port,
+                log_level="debug"
+            )
+        )
