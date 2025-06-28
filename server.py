@@ -527,31 +527,14 @@ if __name__ == "__main__":
         # Run in stdio mode for local MCP clients
         mcp.run()
     else:
-        # Use web app approach with proper /mcp routing
-        from starlette.middleware.cors import CORSMiddleware
-        from starlette.routing import Route
-        
-        app = mcp.http_app()
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_methods=["GET", "POST", "OPTIONS"],
-            allow_headers=["Content-Type", "Authorization"],
-        )
-        
-        # Add handler for /mcp (without slash) that forwards to /mcp/
-        async def mcp_handler(request):
-            # Create new scope with /mcp/ path
-            new_scope = request.scope.copy()
-            new_scope["path"] = "/mcp/"
-            new_scope["raw_path"] = b"/mcp/"
-            
-            # Forward to the app with modified scope
-            return await app(new_scope, request.receive, request.send)
-        
-        # Add the route
-        app.routes.insert(0, Route("/mcp", mcp_handler, methods=["GET", "POST"]))
-        
+        # Simple approach: run on root path
         print(f"Running MCP HTTP server on port {port}")
-        import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=port)
+        import asyncio
+        asyncio.run(
+            mcp.run_http_async(
+                host="0.0.0.0",
+                port=port,
+                path="/",  # Run on root instead of /mcp/
+                log_level="debug"
+            )
+        )
