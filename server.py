@@ -529,13 +529,20 @@ if __name__ == "__main__":
         # Run in stdio mode for local MCP clients
         mcp.run()
     else:
-        # Run in HTTP mode for remote connections (like Claude web)
-        print(f"Running MCP HTTP server on port {port}")
-        asyncio.run(
-            mcp.run_http_async(
-                host="0.0.0.0",
-                port=port,
-                path="/mcp",  # Try this to make it respond at /mcp instead of /mcp/
-                log_level="debug"
-            )
+        # Use web app approach to handle URL routing properly
+        from starlette.middleware.cors import CORSMiddleware
+        
+        app = mcp.http_app()
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["Content-Type", "Authorization"],
         )
+        
+        # Make /mcp work by mounting the app at both /mcp and /mcp/
+        app.mount("/mcp", app)
+        
+        print(f"Running MCP HTTP server on port {port}")
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=port)
