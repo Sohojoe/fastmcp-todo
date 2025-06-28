@@ -522,9 +522,9 @@ import os
 # Determine port and get the FastAPI app for deployment
 port = int(os.getenv("PORT", 8000))
 
-# For FastMCP 2.x, we need to run the server differently
-# The mcp instance itself can be run as an ASGI app
-app = mcp
+# For FastMCP 2.x we expose a Starlette app
+# using the FastMCP http_app helper
+app = mcp.http_app()
 
 if __name__ == "__main__":
     print(f"Running MCP locally on port {port}")
