@@ -519,8 +519,6 @@ def save_tasks(tasks):
     TASKS_FILE.write_text(json.dumps(tasks, indent=2))
 
 if __name__ == "__main__":
-    import asyncio
-    
     port = int(os.getenv("PORT", 8080))
     is_deployment = os.getenv("PORT") is not None or os.getenv("RAILWAY_ENVIRONMENT") is not None
     is_stdio_mode = not sys.stdin.isatty() and not is_deployment
@@ -529,8 +527,9 @@ if __name__ == "__main__":
         # Run in stdio mode for local MCP clients
         mcp.run()
     else:
-        # Use web app approach to handle URL routing properly
+        # Use web app approach with proper /mcp routing
         from starlette.middleware.cors import CORSMiddleware
+        from starlette.routing import Route
         
         app = mcp.http_app()
         app.add_middleware(
@@ -540,8 +539,18 @@ if __name__ == "__main__":
             allow_headers=["Content-Type", "Authorization"],
         )
         
-        # Make /mcp work by mounting the app at both /mcp and /mcp/
-        app.mount("/mcp", app)
+        # Add handler for /mcp (without slash) that forwards to /mcp/
+        async def mcp_handler(request):
+            # Create new scope with /mcp/ path
+            new_scope = request.scope.copy()
+            new_scope["path"] = "/mcp/"
+            new_scope["raw_path"] = b"/mcp/"
+            
+            # Forward to the app with modified scope
+            return await app(new_scope, request.receive, request.send)
+        
+        # Add the route
+        app.routes.insert(0, Route("/mcp", mcp_handler, methods=["GET", "POST"]))
         
         print(f"Running MCP HTTP server on port {port}")
         import uvicorn
