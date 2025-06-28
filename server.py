@@ -4,6 +4,7 @@ Complete Todo MCP Server
 Demonstrates all 3 MCP endpoint types: Tools, Resources, and Prompts
 """
 import os
+import sys
 import uvicorn
 from fastmcp import FastMCP
 import json
@@ -517,7 +518,10 @@ def save_tasks(tasks):
     """Save tasks to JSON file."""
     TASKS_FILE.write_text(json.dumps(tasks, indent=2))
 
+
 import os
+# Optionally add CORS middleware for flexibility
+from starlette.middleware.cors import CORSMiddleware
 
 # Determine port and get the FastAPI app for deployment
 port = int(os.getenv("PORT", 8080))
@@ -525,9 +529,29 @@ port = int(os.getenv("PORT", 8080))
 # For FastMCP 2.x we expose a Starlette app
 # using the FastMCP http_app helper
 app = mcp.http_app()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if __name__ == "__main__":
-    print(f"Running MCP locally on port {port}")
-    import uvicorn
-    # uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Auto-detect environment and run mode
+    # Check if stdin is connected to a terminal (interactive) or pipe (MCP)
+    
+    # MCP servers are typically run with stdin/stdout pipes, not interactive terminals
+    is_stdio_mode = not sys.stdin.isatty()
+    is_deployment = os.getenv("PORT") is not None or os.getenv("RAILWAY_ENVIRONMENT") is not None
+    
+    if is_stdio_mode and not is_deployment:
+        # Run in stdio mode for MCP (when stdin is piped and not in deployment)
+        mcp.run()
+    elif is_deployment:
+        # Run in HTTP mode for deployment (Railway, Render, etc.)
+        print(f"Running MCP HTTP server for deployment on port {port}")
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    else:
+        # Default to HTTP mode for local development
+        print(f"Running MCP locally on port {port}")
+        uvicorn.run(app, host="0.0.0.0", port=port, reload=True)
