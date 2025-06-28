@@ -535,6 +535,7 @@ if __name__ == "__main__":
             mcp.run_http_async(
                 host="0.0.0.0",
                 port=port,
+                path="/mcp",  # Try this to make it respond at /mcp instead of /mcp/
                 log_level="debug"
             )
         )
