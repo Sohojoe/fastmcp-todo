@@ -526,7 +526,7 @@ if __name__ == "__main__":
     port = os.getenv("PORT")
     if port:
         # For deployment (Railway, Heroku, etc.)
-        mcp.run(transport="sse", host="0.0.0.0", port=int(port))
+        mcp.run(transport="http", host="0.0.0.0", port=int(port))
     else:
         # For local development and MCP
         mcp.run()
