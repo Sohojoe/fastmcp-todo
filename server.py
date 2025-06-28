@@ -3,6 +3,9 @@
 Complete Todo MCP Server
 Demonstrates all 3 MCP endpoint types: Tools, Resources, and Prompts
 """
+import os
+import uvicorn
+from fastapi import FastAPI
 from fastmcp import FastMCP
 import json
 from datetime import datetime, timedelta
@@ -526,7 +529,12 @@ if __name__ == "__main__":
     port = os.getenv("PORT")
     if port:
         print(f"Starting MCP server on port {port}...")
-        mcp.run(transport="http", host="0.0.0.0", port=int(port), path="/mcp")
+        # mcp.run(transport="http", host="0.0.0.0", port=int(port), path="/mcp")
+        mcp_app = mcp.http_app(path='/mcp')
+        app = FastAPI(lifespan=mcp_app.lifespan)  # KEY: Pass lifespan!
+        app.mount("/", mcp_app)
+        
+        uvicorn.run(app, host="0.0.0.0", port=port)
     else:
         # For local development and MCP
         print("Starting MCP server locally...")
