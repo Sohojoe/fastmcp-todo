@@ -517,23 +517,13 @@ def save_tasks(tasks):
     """Save tasks to JSON file."""
     TASKS_FILE.write_text(json.dumps(tasks, indent=2))
 
-# =============================================================================
-# Server Startup
-# =============================================================================
+import os
+
+# Determine port and initialize MCP transport app early
+port = int(os.getenv("PORT", 8000))
+app = mcp.transport("http", host="0.0.0.0", port=port)  # type: ignore
 
 if __name__ == "__main__":
-    import os
-    
-    # Check if we're in a deployment environment (Railway sets PORT)
-    port = os.getenv("PORT")
-    if port:
-        print(f"Starting MCP server on port {port}...")
-        port = int(port)
-        mcp.run(transport="http", host="0.0.0.0", port=port)
-    else:
-        # For local development and MCP
-        print("Starting MCP server locally...")
-        mcp.run()
-
-# Expose FastAPI app for deployment (e.g., uvicorn server:app)
-app = mcp.transport("http")  # type: ignore
+    print(f"Running MCP locally on port {port}")
+    import uvicorn
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)
