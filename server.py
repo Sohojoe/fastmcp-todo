@@ -536,14 +536,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
-from starlette.routing import Route
-from starlette.responses import RedirectResponse
-
-async def redirect_to_mcp(request):
-    return RedirectResponse(url="/mcp/", status_code=301)
-
-# Add the redirect route
-app.routes.append(Route("/mcp", redirect_to_mcp, methods=["GET", "POST"]))
+app.mount("/mcp", app)
 
 if __name__ == "__main__":
     # Auto-detect environment and run mode
