@@ -67,7 +67,7 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
-todos.json
+tasks.json
 *.log
 
 # uv

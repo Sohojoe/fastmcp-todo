@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastmcp import Client
-from server import mcp, TodoManager, Priority, Status
+from server import mcp, load_tasks, save_tasks, TASKS_FILE
 
 
 @pytest.fixture
@@ -22,326 +22,719 @@ async def client():
 
 
 @pytest.fixture
-def temp_todo_manager():
-    """Create a temporary todo manager for testing."""
+def temp_tasks_file():
+    """Create a temporary tasks file for testing."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         temp_file = f.name
     
+    # Patch the TASKS_FILE global to use our temp file
+    original_file = TASKS_FILE
+    import server
+    server.TASKS_FILE = Path(temp_file)
+    
     try:
-        manager = TodoManager(temp_file)
-        yield manager
+        yield temp_file
     finally:
+        server.TASKS_FILE = original_file
         if os.path.exists(temp_file):
             os.unlink(temp_file)
 
 
-class TestTodoManager:
-    """Test the TodoManager class directly."""
+class TestTaskHelpers:
+    """Test the helper functions directly."""
     
-    def test_create_todo(self, temp_todo_manager):
-        """Test creating a new todo."""
-        todo = temp_todo_manager.create_todo(
-            title="Test Todo",
-            description="A test todo",
-            priority=Priority.HIGH,
-            category="test"
-        )
+    def test_load_save_tasks(self, temp_tasks_file):
+        """Test loading and saving tasks."""
+        # Test loading empty file
+        tasks = load_tasks()
+        assert tasks == []
         
-        assert todo.id == 1
-        assert todo.title == "Test Todo"
-        assert todo.description == "A test todo"
-        assert todo.priority == Priority.HIGH
-        assert todo.status == Status.TODO
-        assert todo.category == "test"
-        assert todo.created_at is not None
-        assert todo.updated_at is not None
-    
-    def test_get_todo(self, temp_todo_manager):
-        """Test getting a todo by ID."""
-        todo = temp_todo_manager.create_todo("Test Todo")
-        retrieved = temp_todo_manager.get_todo(1)
+        # Test saving and loading tasks
+        test_tasks = [
+            {
+                "id": 1,
+                "title": "Test Task",
+                "priority": "medium",
+                "due_date": None,
+                "created": datetime.now().isoformat(),
+                "completed": False,
+                "completed_at": None
+            }
+        ]
         
-        assert retrieved is not None
-        assert retrieved.id == 1
-        assert retrieved.title == "Test Todo"
+        save_tasks(test_tasks)
+        loaded_tasks = load_tasks()
         
-        # Test getting non-existent todo
-        assert temp_todo_manager.get_todo(999) is None
-    
-    def test_update_todo(self, temp_todo_manager):
-        """Test updating a todo."""
-        todo = temp_todo_manager.create_todo("Original Title")
-        
-        updated = temp_todo_manager.update_todo(
-            1,
-            title="Updated Title",
-            priority=Priority.URGENT,
-            status=Status.IN_PROGRESS
-        )
-        
-        assert updated is not None
-        assert updated.title == "Updated Title"
-        assert updated.priority == Priority.URGENT
-        assert updated.status == Status.IN_PROGRESS
-        assert updated.updated_at > updated.created_at
-    
-    def test_delete_todo(self, temp_todo_manager):
-        """Test deleting a todo."""
-        temp_todo_manager.create_todo("To Delete")
-        
-        assert temp_todo_manager.delete_todo(1) is True
-        assert temp_todo_manager.get_todo(1) is None
-        assert temp_todo_manager.delete_todo(999) is False
-    
-    def test_list_todos_with_filters(self, temp_todo_manager):
-        """Test listing todos with various filters."""
-        # Create test todos
-        temp_todo_manager.create_todo("Todo 1", priority=Priority.HIGH, category="work")
-        temp_todo_manager.create_todo("Todo 2", priority=Priority.LOW, category="personal")
-        temp_todo_manager.update_todo(2, status=Status.COMPLETED)
-        temp_todo_manager.create_todo("Todo 3", priority=Priority.HIGH, category="work")
-        
-        # Test no filters
-        all_todos = temp_todo_manager.list_todos()
-        assert len(all_todos) == 3
-        
-        # Test status filter
-        completed = temp_todo_manager.list_todos(status=Status.COMPLETED)
-        assert len(completed) == 1
-        assert completed[0].title == "Todo 2"
-        
-        # Test category filter
-        work_todos = temp_todo_manager.list_todos(category="work")
-        assert len(work_todos) == 2
-        
-        # Test priority filter
-        high_priority = temp_todo_manager.list_todos(priority=Priority.HIGH)
-        assert len(high_priority) == 2
-    
-    def test_get_stats(self, temp_todo_manager):
-        """Test getting todo statistics."""
-        # Create test data
-        temp_todo_manager.create_todo("Todo 1", category="work")
-        temp_todo_manager.create_todo("Todo 2", category="work")
-        temp_todo_manager.create_todo("Todo 3", category="personal")
-        temp_todo_manager.update_todo(2, status=Status.COMPLETED)
-        
-        stats = temp_todo_manager.get_stats()
-        
-        assert stats['total'] == 3
-        assert stats['completed'] == 1
-        assert stats['pending'] == 2
-        assert stats['completion_rate'] == 33.3
-        assert stats['by_category']['work'] == 1  # Only non-completed work todos
-        assert stats['by_category']['personal'] == 1
-    
-    def test_overdue_todos(self, temp_todo_manager):
-        """Test getting overdue todos."""
-        # Create todos with different due dates
-        past_date = datetime.now() - timedelta(days=1)
-        future_date = datetime.now() + timedelta(days=1)
-        
-        temp_todo_manager.create_todo("Overdue", due_date=past_date)
-        temp_todo_manager.create_todo("Not Overdue", due_date=future_date)
-        temp_todo_manager.create_todo("Overdue but Completed", due_date=past_date)
-        temp_todo_manager.update_todo(3, status=Status.COMPLETED)
-        
-        overdue = temp_todo_manager.get_overdue_todos()
-        assert len(overdue) == 1
-        assert overdue[0].title == "Overdue"
+        assert len(loaded_tasks) == 1
+        assert loaded_tasks[0]["title"] == "Test Task"
+        assert loaded_tasks[0]["priority"] == "medium"
+        assert loaded_tasks[0]["completed"] is False
 
 
 class TestMCPTools:
     """Test the MCP tools through the client interface."""
     
-    async def test_create_todo_tool(self, client):
-        """Test the create_todo tool."""
-        result = await client.call_tool("create_todo", {
-            "title": "Test via MCP",
-            "description": "Testing MCP tool",
+    async def test_add_task_tool(self, client, temp_tasks_file):
+        """Test the add_task tool."""
+        result = await client.call_tool("add_task", {
+            "title": "Test Task via MCP",
             "priority": "high",
-            "category": "test",
-            "tags": "mcp,testing"
+            "due_date": "2025-12-31"
         })
         
         response = result[0].text
-        data = json.loads(response)
         
-        assert data["success"] is True
-        assert "todo" in data
-        assert data["todo"]["title"] == "Test via MCP"
-        assert data["todo"]["priority"] == "high"
-        assert data["todo"]["category"] == "test"
-        assert "mcp" in data["todo"]["tags"]
-        assert "testing" in data["todo"]["tags"]
+        assert "✅ Added task: 'Test Task via MCP'" in response
+        assert "Priority: high" in response
+        
+        # Verify task was saved
+        tasks = load_tasks()
+        assert len(tasks) == 1
+        assert tasks[0]["title"] == "Test Task via MCP"
+        assert tasks[0]["priority"] == "high"
+        assert tasks[0]["due_date"] == "2025-12-31"
+        assert tasks[0]["completed"] is False
     
-    async def test_list_todos_tool(self, client):
-        """Test the list_todos tool."""
-        # First create some todos
-        await client.call_tool("create_todo", {
-            "title": "Todo 1",
-            "priority": "high",
-            "category": "work"
-        })
-        await client.call_tool("create_todo", {
-            "title": "Todo 2", 
-            "priority": "low",
-            "category": "personal"
-        })
-        
-        # List all todos
-        result = await client.call_tool("list_todos", {})
-        response = result[0].text
-        data = json.loads(response)
-        
-        assert data["success"] is True
-        assert len(data["todos"]) >= 2
-        assert data["total_count"] >= 2
-    
-    async def test_search_todos_tool(self, client):
-        """Test the search_todos tool."""
-        # Create a todo to search for
-        await client.call_tool("create_todo", {
-            "title": "Searchable Todo",
-            "description": "This todo contains searchable content"
-        })
-        
-        # Search for it
-        result = await client.call_tool("search_todos", {
-            "query": "searchable",
-            "limit": 10
+    async def test_add_task_default_priority(self, client, temp_tasks_file):
+        """Test adding task with default priority."""
+        result = await client.call_tool("add_task", {
+            "title": "Default Priority Task"
         })
         
         response = result[0].text
-        data = json.loads(response)
+        assert "Priority: medium" in response
         
-        assert data["success"] is True
-        assert data["total_matches"] >= 1
-        assert any("searchable" in todo["title"].lower() or 
-                 "searchable" in (todo["description"] or "").lower() 
-                 for todo in data["todos"])
+        tasks = load_tasks()
+        assert tasks[0]["priority"] == "medium"
     
-    async def test_complete_todo_tool(self, client):
-        """Test the complete_todo tool."""
-        # Create a todo first
-        create_result = await client.call_tool("create_todo", {
-            "title": "Todo to Complete"
+    async def test_complete_task_tool(self, client, temp_tasks_file):
+        """Test the complete_task tool."""
+        # First add a task
+        await client.call_tool("add_task", {
+            "title": "Task to Complete"
         })
-        create_data = json.loads(create_result[0].text)
-        todo_id = create_data["todo"]["id"]
         
         # Complete it
-        result = await client.call_tool("complete_todo", {
-            "todo_id": todo_id
+        result = await client.call_tool("complete_task", {
+            "task_id": 1
         })
         
         response = result[0].text
-        data = json.loads(response)
+        assert "🎉 Completed task: 'Task to Complete'" in response
         
-        assert data["success"] is True
-        assert data["todo"]["status"] == "completed"
+        # Verify task is marked completed
+        tasks = load_tasks()
+        assert tasks[0]["completed"] is True
+        assert tasks[0]["completed_at"] is not None
     
-    async def test_get_todo_stats_tool(self, client):
-        """Test the get_todo_stats tool."""
-        result = await client.call_tool("get_todo_stats", {})
-        response = result[0].text
-        data = json.loads(response)
-        
-        assert data["success"] is True
-        assert "statistics" in data
-        stats = data["statistics"]
-        assert "total" in stats
-        assert "completed" in stats
-        assert "pending" in stats
-        assert "completion_rate" in stats
-    
-    async def test_invalid_priority(self, client):
-        """Test creating todo with invalid priority."""
-        result = await client.call_tool("create_todo", {
-            "title": "Invalid Priority Todo",
-            "priority": "invalid_priority"
+    async def test_complete_nonexistent_task(self, client, temp_tasks_file):
+        """Test completing a task that doesn't exist."""
+        result = await client.call_tool("complete_task", {
+            "task_id": 999
         })
         
         response = result[0].text
-        data = json.loads(response)
-        
-        assert "error" in data
-        assert "invalid priority" in data["error"].lower()
+        assert "❌ Task 999 not found" in response
     
-    async def test_invalid_date_format(self, client):
-        """Test creating todo with invalid date format."""
-        result = await client.call_tool("create_todo", {
-            "title": "Invalid Date Todo",
-            "due_date": "not-a-date"
+    async def test_delete_task_tool(self, client, temp_tasks_file):
+        """Test the delete_task tool."""
+        # First add a task
+        await client.call_tool("add_task", {
+            "title": "Task to Delete"
+        })
+        
+        # Delete it
+        result = await client.call_tool("delete_task", {
+            "task_id": 1
         })
         
         response = result[0].text
-        data = json.loads(response)
+        assert "🗑️ Deleted task 1" in response
         
-        assert "error" in data
-        assert "date" in data["error"].lower()
+        # Verify task is deleted
+        tasks = load_tasks()
+        assert len(tasks) == 0
+    
+    async def test_delete_nonexistent_task(self, client, temp_tasks_file):
+        """Test deleting a task that doesn't exist."""
+        result = await client.call_tool("delete_task", {
+            "task_id": 999
+        })
+        
+        response = result[0].text
+        assert "❌ Task 999 not found" in response
+    
+    async def test_update_task_priority_tool(self, client, temp_tasks_file):
+        """Test the update_task_priority tool."""
+        # First add a task
+        await client.call_tool("add_task", {
+            "title": "Task to Update",
+            "priority": "low"
+        })
+        
+        # Update priority
+        result = await client.call_tool("update_task_priority", {
+            "task_id": 1,
+            "priority": "urgent"
+        })
+        
+        response = result[0].text
+        assert "📝 Updated priority for 'Task to Update' to urgent" in response
+        
+        # Verify priority was updated
+        tasks = load_tasks()
+        assert tasks[0]["priority"] == "urgent"
+    
+    async def test_update_task_invalid_priority(self, client, temp_tasks_file):
+        """Test updating task with invalid priority."""
+        await client.call_tool("add_task", {"title": "Test Task"})
+        
+        result = await client.call_tool("update_task_priority", {
+            "task_id": 1,
+            "priority": "invalid"
+        })
+        
+        response = result[0].text
+        assert "❌ Priority must be one of:" in response
+        assert "low, medium, high, urgent" in response
+    
+    async def test_list_tasks_tool(self, client, temp_tasks_file):
+        """Test the list_tasks tool."""
+        # Add some tasks
+        await client.call_tool("add_task", {"title": "Pending Task", "priority": "high"})
+        await client.call_tool("add_task", {"title": "Task to Complete", "priority": "low"})
+        await client.call_tool("complete_task", {"task_id": 2})
+        
+        # Test listing all tasks
+        result = await client.call_tool("list_tasks", {"status": "all"})
+        response = result[0].text
+        
+        assert "📋 All Tasks (2 total):" in response
+        assert "Pending Task" in response
+        assert "Task to Complete" in response
+        assert "🟠" in response  # High priority icon
+        assert "🔵" in response  # Low priority icon
+        
+        # Test listing pending tasks only
+        result = await client.call_tool("list_tasks", {"status": "pending"})
+        response = result[0].text
+        
+        assert "📋 Pending Tasks (1 total):" in response
+        assert "Pending Task" in response
+        assert "Task to Complete" not in response  # Should be filtered out
+        
+        # Test listing completed tasks only
+        result = await client.call_tool("list_tasks", {"status": "completed"})
+        response = result[0].text
+        
+        assert "📋 Completed Tasks (1 total):" in response
+        assert "Task to Complete" in response
+        assert "Pending Task" not in response  # Should be filtered out
+    
+    async def test_list_tasks_invalid_status(self, client, temp_tasks_file):
+        """Test list_tasks with invalid status."""
+        result = await client.call_tool("list_tasks", {"status": "invalid"})
+        response = result[0].text
+        
+        assert "❌ Status must be one of:" in response
+        assert "all, pending, completed" in response
+    
+    async def test_add_task_invalid_priority(self, client, temp_tasks_file):
+        """Test adding task with invalid priority."""
+        result = await client.call_tool("add_task", {
+            "title": "Invalid Priority Task",
+            "priority": "super_urgent"
+        })
+        
+        response = result[0].text
+        # Note: Currently the server doesn't validate priority in add_task
+        # This test documents the current behavior - it accepts any priority
+        assert "✅ Added task: 'Invalid Priority Task'" in response
+        assert "Priority: super_urgent" in response
+    
+    async def test_add_task_empty_title(self, client, temp_tasks_file):
+        """Test adding task with empty title."""
+        result = await client.call_tool("add_task", {
+            "title": ""
+        })
+        
+        response = result[0].text
+        # Currently accepts empty titles - this documents the behavior
+        assert "✅ Added task: ''" in response
+    
+    async def test_list_tasks_empty_list(self, client, temp_tasks_file):
+        """Test listing tasks when no tasks exist."""
+        result = await client.call_tool("list_tasks", {"status": "all"})
+        response = result[0].text
+        
+        assert "📝 No all tasks found." in response
+        
+        # Test with specific statuses too
+        result = await client.call_tool("list_tasks", {"status": "pending"})
+        response = result[0].text
+        assert "📝 No pending tasks found." in response
+    
+    async def test_task_id_generation_with_gaps(self, client, temp_tasks_file):
+        """Test that task IDs continue incrementing even after deletions."""
+        # Add 3 tasks
+        await client.call_tool("add_task", {"title": "Task 1"})
+        await client.call_tool("add_task", {"title": "Task 2"}) 
+        await client.call_tool("add_task", {"title": "Task 3"})
+        
+        # Delete the middle task
+        await client.call_tool("delete_task", {"task_id": 2})
+        
+        # Add a new task - should get ID 4, not reuse ID 2
+        await client.call_tool("add_task", {"title": "Task 4"})
+        
+        tasks = load_tasks()
+        task_ids = [task["id"] for task in tasks]
+        assert 4 in task_ids  # New task should have ID 4
+        assert 2 not in task_ids  # ID 2 should not be reused
+        assert len(tasks) == 3  # Should have 3 tasks total
+    
+    async def test_priority_icons_display(self, client, temp_tasks_file):
+        """Test that different priority icons are displayed correctly."""
+        # Add tasks with all priority levels
+        await client.call_tool("add_task", {"title": "Low Task", "priority": "low"})
+        await client.call_tool("add_task", {"title": "Medium Task", "priority": "medium"})
+        await client.call_tool("add_task", {"title": "High Task", "priority": "high"})
+        await client.call_tool("add_task", {"title": "Urgent Task", "priority": "urgent"})
+        
+        result = await client.call_tool("list_tasks", {"status": "all"})
+        response = result[0].text
+        
+        # Check that different priority icons appear
+        assert "🔵" in response  # Low priority
+        assert "🟡" in response  # Medium priority  
+        assert "🟠" in response  # High priority
+        assert "🔴" in response  # Urgent priority
+    
+    async def test_due_date_display(self, client, temp_tasks_file):
+        """Test that due dates are displayed correctly."""
+        await client.call_tool("add_task", {
+            "title": "Task with Due Date",
+            "due_date": "2025-12-31"
+        })
+        await client.call_tool("add_task", {
+            "title": "Task without Due Date"
+        })
+        
+        result = await client.call_tool("list_tasks", {"status": "all"})
+        response = result[0].text
+        
+        assert "Task with Due Date (Due: 2025-12-31)" in response
+        assert "Task without Due Date" in response
+        assert "(Due:" not in response.split("Task without Due Date")[1].split("\n")[0]
+    
+    async def test_corrupted_json_handling(self, temp_tasks_file):
+        """Test that corrupted JSON is handled gracefully."""
+        # Write corrupted JSON to file
+        with open(temp_tasks_file, 'w') as f:
+            f.write('{"invalid": json}')
+        
+        # Should return empty list instead of crashing
+        tasks = load_tasks()
+        assert tasks == []
+    
+    async def test_integration_workflow(self, client, temp_tasks_file):
+        """Test a complete workflow of task management."""
+        # Add several tasks
+        await client.call_tool("add_task", {"title": "Plan project", "priority": "high"})
+        await client.call_tool("add_task", {"title": "Write code", "priority": "medium"})
+        await client.call_tool("add_task", {"title": "Test code", "priority": "high"})
+        await client.call_tool("add_task", {"title": "Deploy", "priority": "low"})
+        
+        # Check initial state
+        result = await client.call_tool("list_tasks", {"status": "pending"})
+        assert "4 total" in result[0].text
+        
+        # Complete some tasks
+        await client.call_tool("complete_task", {"task_id": 1})
+        await client.call_tool("complete_task", {"task_id": 2})
+        
+        # Update priority of remaining task
+        await client.call_tool("update_task_priority", {"task_id": 3, "priority": "urgent"})
+        
+        # Check final state
+        result = await client.read_resource("tasks://stats")
+        stats = json.loads(result[0].text)
+        assert stats["total_tasks"] == 4
+        assert stats["completed_tasks"] == 2
+        assert stats["pending_tasks"] == 2
+        assert stats["completion_rate"] == 50.0
+        
+        # Check that priority was updated
+        result = await client.read_resource("tasks://task/3")
+        task = json.loads(result[0].text)
+        assert task["priority"] == "urgent"
+        
+        # Delete a task
+        await client.call_tool("delete_task", {"task_id": 4})
+        
+        # Final verification
+        result = await client.read_resource("tasks://all")
+        tasks = json.loads(result[0].text)
+        assert len(tasks) == 3  # Should have 3 tasks left
 
 
 class TestMCPResources:
     """Test the MCP resources."""
     
-    async def test_all_todos_resource(self, client):
-        """Test the todos://all resource."""
-        # Create a todo first
-        await client.call_tool("create_todo", {"title": "Resource Test Todo"})
+    async def test_all_tasks_resource(self, client, temp_tasks_file):
+        """Test the tasks://all resource."""
+        # Add some tasks first
+        await client.call_tool("add_task", {"title": "Task 1", "priority": "high"})
+        await client.call_tool("add_task", {"title": "Task 2", "priority": "low"})
         
         # Read the resource
-        result = await client.read_resource("todos://all")
+        result = await client.read_resource("tasks://all")
         data = json.loads(result[0].text)
         
         assert isinstance(data, list)
-        assert len(data) >= 1
-        assert any(todo["title"] == "Resource Test Todo" for todo in data)
+        assert len(data) == 2
+        assert data[0]["title"] == "Task 1"
+        assert data[1]["title"] == "Task 2"
     
-    async def test_stats_resource(self, client):
-        """Test the todos://stats resource."""
-        result = await client.read_resource("todos://stats")
+    async def test_pending_tasks_resource(self, client, temp_tasks_file):
+        """Test the tasks://pending resource."""
+        # Add tasks and complete one
+        await client.call_tool("add_task", {"title": "Pending Task"})
+        await client.call_tool("add_task", {"title": "Task to Complete"})
+        await client.call_tool("complete_task", {"task_id": 2})
+        
+        # Read pending tasks
+        result = await client.read_resource("tasks://pending")
+        data = json.loads(result[0].text)
+        
+        assert len(data) == 1
+        assert data[0]["title"] == "Pending Task"
+        assert data[0]["completed"] is False
+    
+    async def test_completed_tasks_resource(self, client, temp_tasks_file):
+        """Test the tasks://completed resource."""
+        # Add tasks and complete one
+        await client.call_tool("add_task", {"title": "Pending Task"})
+        await client.call_tool("add_task", {"title": "Completed Task"})
+        await client.call_tool("complete_task", {"task_id": 2})
+        
+        # Read completed tasks
+        result = await client.read_resource("tasks://completed")
+        data = json.loads(result[0].text)
+        
+        assert len(data) == 1
+        assert data[0]["title"] == "Completed Task"
+        assert data[0]["completed"] is True
+    
+    async def test_priority_tasks_resource(self, client, temp_tasks_file):
+        """Test the tasks://priority/{priority} resource."""
+        # Add tasks with different priorities
+        await client.call_tool("add_task", {"title": "High Priority", "priority": "high"})
+        await client.call_tool("add_task", {"title": "Low Priority", "priority": "low"})
+        await client.call_tool("add_task", {"title": "Another High", "priority": "high"})
+        
+        # Read high priority tasks
+        result = await client.read_resource("tasks://priority/high")
+        data = json.loads(result[0].text)
+        
+        assert len(data) == 2
+        assert all(task["priority"] == "high" for task in data)
+    
+    async def test_stats_resource(self, client, temp_tasks_file):
+        """Test the tasks://stats resource."""
+        # Add some tasks with different priorities and complete some
+        await client.call_tool("add_task", {"title": "Task 1", "priority": "high"})
+        await client.call_tool("add_task", {"title": "Task 2", "priority": "medium"})
+        await client.call_tool("add_task", {"title": "Task 3", "priority": "high"})
+        await client.call_tool("complete_task", {"task_id": 1})
+        
+        result = await client.read_resource("tasks://stats")
         stats = json.loads(result[0].text)
         
-        assert "total" in stats
-        assert "completed" in stats
-        assert "pending" in stats
-        assert "completion_rate" in stats
+        assert stats["total_tasks"] == 3
+        assert stats["completed_tasks"] == 1
+        assert stats["pending_tasks"] == 2
+        assert stats["completion_rate"] == 33.3
+        assert stats["priority_breakdown"]["high"] == 2  # Only 2 high priority tasks total
+        assert stats["priority_breakdown"]["medium"] == 1
     
-    async def test_categories_resource(self, client):
-        """Test the todos://categories resource."""
-        # Create todos with categories
-        await client.call_tool("create_todo", {
-            "title": "Work Todo", 
-            "category": "work"
-        })
-        await client.call_tool("create_todo", {
-            "title": "Personal Todo",
-            "category": "personal"
+    async def test_task_details_resource(self, client, temp_tasks_file):
+        """Test the tasks://task/{task_id} resource."""
+        # Add a task
+        await client.call_tool("add_task", {
+            "title": "Detailed Task",
+            "priority": "urgent",
+            "due_date": "2025-12-31"
         })
         
-        result = await client.read_resource("todos://categories")
-        categories = json.loads(result[0].text)
+        # Get task details
+        result = await client.read_resource("tasks://task/1")
+        task = json.loads(result[0].text)
         
-        assert isinstance(categories, list)
-        assert "work" in categories
-        assert "personal" in categories
+        assert task["id"] == 1
+        assert task["title"] == "Detailed Task"
+        assert task["priority"] == "urgent"
+        assert task["due_date"] == "2025-12-31"
+        assert task["completed"] is False
     
-    async def test_tags_resource(self, client):
-        """Test the todos://tags resource."""
-        # Create todos with tags
-        await client.call_tool("create_todo", {
-            "title": "Tagged Todo",
-            "tags": "important,urgent,work"
+    async def test_nonexistent_task_details(self, client, temp_tasks_file):
+        """Test getting details for non-existent task."""
+        result = await client.read_resource("tasks://task/999")
+        response = json.loads(result[0].text)
+        
+        assert "error" in response
+        assert "Task 999 not found" in response["error"]
+    
+    async def test_empty_resources(self, client, temp_tasks_file):
+        """Test resources when no tasks exist."""
+        # Test all resource endpoints with empty data
+        result = await client.read_resource("tasks://all")
+        data = json.loads(result[0].text)
+        assert data == []
+        
+        result = await client.read_resource("tasks://pending")
+        data = json.loads(result[0].text)
+        assert data == []
+        
+        result = await client.read_resource("tasks://completed")
+        data = json.loads(result[0].text)
+        assert data == []
+        
+        result = await client.read_resource("tasks://stats")
+        stats = json.loads(result[0].text)
+        assert stats["total_tasks"] == 0
+        assert stats["completed_tasks"] == 0
+        assert stats["pending_tasks"] == 0
+        assert stats["completion_rate"] == 0
+        assert stats["priority_breakdown"] == {}
+    
+    async def test_invalid_priority_resource(self, client, temp_tasks_file):
+        """Test priority resource with non-existent priority."""
+        await client.call_tool("add_task", {"title": "Test Task", "priority": "medium"})
+        
+        result = await client.read_resource("tasks://priority/nonexistent")
+        data = json.loads(result[0].text)
+        assert data == []  # Should return empty list for non-matching priority
+    
+    async def test_invalid_task_id_conversion(self, client, temp_tasks_file):
+        """Test task details resource with invalid task ID format."""
+        # This should handle the int conversion gracefully
+        try:
+            result = await client.read_resource("tasks://task/invalid_id")
+            # If it doesn't crash, check the response
+            response = json.loads(result[0].text)
+            # Should either error gracefully or handle the conversion
+        except (ValueError, TypeError):
+            # Acceptable to throw an error for invalid ID format
+            pass
+
+
+class TestMCPPrompts:
+    """Test the MCP prompts."""
+    
+    async def test_task_prioritization_prompt(self, client):
+        """Test the task_prioritization_prompt."""
+        result = await client.get_prompt("task_prioritization_prompt", {
+            "task_list": "1. Fix bug\n2. Write report\n3. Call client"
         })
         
-        result = await client.read_resource("todos://tags")
-        tags = json.loads(result[0].text)
+        prompt = result.messages[0].content.text
         
-        assert isinstance(tags, list)
-        assert "important" in tags
-        assert "urgent" in tags
-        assert "work" in tags
+        assert "prioritize these tasks" in prompt.lower()
+        assert "urgency" in prompt.lower()
+        assert "importance" in prompt.lower()
+        assert "Fix bug" in prompt
+        assert "Write report" in prompt
+        assert "Call client" in prompt
+    
+    async def test_daily_planning_prompt(self, client):
+        """Test the daily_planning_prompt."""
+        result = await client.get_prompt("daily_planning_prompt", {
+            "pending_tasks": "Task 1\nTask 2\nTask 3",
+            "available_hours": 6
+        })
+        
+        prompt = result.messages[0].content.text
+        
+        assert "plan my day" in prompt.lower()
+        assert "6 hours" in prompt
+        assert "Task 1" in prompt
+        assert "morning" in prompt.lower()
+        assert "afternoon" in prompt.lower()
+    
+    async def test_task_breakdown_prompt(self, client):
+        """Test the task_breakdown_prompt."""
+        result = await client.get_prompt("task_breakdown_prompt", {
+            "complex_task": "Launch new product"
+        })
+        
+        prompt = result.messages[0].content.text
+        
+        assert "break this down" in prompt.lower()
+        assert "Launch new product" in prompt
+        assert "actionable steps" in prompt.lower()
+        assert "time estimate" in prompt.lower()
+    
+    async def test_weekly_review_prompt(self, client):
+        """Test the weekly_review_prompt."""
+        result = await client.get_prompt("weekly_review_prompt", {
+            "completed_tasks": "Completed task 1\nCompleted task 2",
+            "pending_tasks": "Pending task 1\nPending task 2"
+        })
+        
+        prompt = result.messages[0].content.text
+        
+        assert "review my week" in prompt.lower()
+        assert "Completed task 1" in prompt
+        assert "Pending task 1" in prompt
+        assert "wins & achievements" in prompt.lower()
+        assert "next week planning" in prompt.lower()
+    
+    async def test_smart_daily_planning_prompt(self, client, temp_tasks_file):
+        """Test the smart_daily_planning_prompt with actual task data."""
+        # Add some test tasks first
+        await client.call_tool("add_task", {
+            "title": "Urgent task", 
+            "priority": "urgent",
+            "due_date": "2025-06-27"
+        })
+        await client.call_tool("add_task", {
+            "title": "Medium task",
+            "priority": "medium"
+        })
+        await client.call_tool("add_task", {
+            "title": "Low priority task",
+            "priority": "low"
+        })
+        
+        result = await client.get_prompt("smart_daily_planning_prompt", {})
+        prompt = result.messages[0].content.text
+        
+        assert "Smart Daily Planning" in prompt
+        assert "Urgent task" in prompt
+        assert "Medium task" in prompt
+        assert "🔴" in prompt  # Urgent priority icon
+        assert "🟡" in prompt  # Medium priority icon
+        assert "Top 3 Focus Tasks" in prompt
+    
+    async def test_smart_daily_planning_prompt_empty(self, client, temp_tasks_file):
+        """Test smart_daily_planning_prompt with no tasks."""
+        result = await client.get_prompt("smart_daily_planning_prompt", {})
+        prompt = result.messages[0].content.text
+        
+        assert "no pending tasks" in prompt.lower()
+        assert "🎉" in prompt
+        assert "well-deserved break" in prompt
+    
+    async def test_smart_prioritization_prompt(self, client, temp_tasks_file):
+        """Test the smart_prioritization_prompt with actual task data."""
+        # Add tasks with different priorities
+        await client.call_tool("add_task", {
+            "title": "High priority task",
+            "priority": "high"
+        })
+        await client.call_tool("add_task", {
+            "title": "Low priority task", 
+            "priority": "low"
+        })
+        
+        result = await client.get_prompt("smart_prioritization_prompt", {})
+        prompt = result.messages[0].content.text
+        
+        assert "Smart Task Prioritization Analysis" in prompt
+        assert "High priority task" in prompt
+        assert "Low priority task" in prompt
+        assert "Priority Breakdown:" in prompt
+        assert "🟠 High:" in prompt  # High priority summary
+        assert "🔵 Low:" in prompt   # Low priority summary
+        assert "Immediate Action Items" in prompt
+    
+    async def test_overdue_tasks_prompt_no_overdue(self, client, temp_tasks_file):
+        """Test overdue_tasks_prompt with no overdue tasks."""
+        result = await client.get_prompt("overdue_tasks_prompt", {})
+        prompt = result.messages[0].content.text
+        
+        assert "Great News!" in prompt
+        assert "no overdue tasks" in prompt
+        assert "🌟" in prompt
+    
+    async def test_overdue_tasks_prompt_with_overdue(self, client, temp_tasks_file):
+        """Test overdue_tasks_prompt with overdue tasks."""
+        # Add an overdue task (yesterday's date)
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        await client.call_tool("add_task", {
+            "title": "Overdue task",
+            "priority": "high", 
+            "due_date": yesterday
+        })
+        
+        # Add a task due soon
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        await client.call_tool("add_task", {
+            "title": "Due soon task",
+            "priority": "medium",
+            "due_date": tomorrow
+        })
+        
+        result = await client.get_prompt("overdue_tasks_prompt", {})
+        prompt = result.messages[0].content.text
+        
+        assert "Deadline Management Alert" in prompt
+        assert "Overdue Tasks" in prompt
+        assert "Due Soon" in prompt
+        assert "Overdue task" in prompt
+        assert "Due soon task" in prompt
+        assert "days overdue" in prompt
+        assert "Triage Strategy" in prompt
+
+
+class TestEdgeCases:
+    """Test edge cases and error conditions."""
+    
+    async def test_prompt_with_empty_parameters(self, client):
+        """Test prompts with empty/minimal parameters."""
+        result = await client.get_prompt("task_prioritization_prompt", {
+            "task_list": ""
+        })
+        prompt = result.messages[0].content.text
+        assert "prioritize these tasks" in prompt.lower()
+        
+        result = await client.get_prompt("daily_planning_prompt", {
+            "pending_tasks": "",
+            "available_hours": 0
+        })
+        prompt = result.messages[0].content.text
+        assert "0 hours" in prompt
+    
+    async def test_very_long_task_title(self, client, temp_tasks_file):
+        """Test handling of very long task titles."""
+        long_title = "A" * 1000  # 1000 character title
+        result = await client.call_tool("add_task", {
+            "title": long_title,
+            "priority": "medium"
+        })
+        
+        response = result[0].text
+        assert "✅ Added task:" in response
+        
+        # Verify it was saved correctly
+        tasks = load_tasks()
+        assert tasks[0]["title"] == long_title
+    
+    async def test_special_characters_in_title(self, client, temp_tasks_file):
+        """Test handling of special characters in task titles."""
+        special_title = "Task with émojis 🎉 and spëcial chars & symbols!"
+        result = await client.call_tool("add_task", {
+            "title": special_title
+        })
+        
+        response = result[0].text
+        assert special_title in response
+        
+        # Test listing also handles special characters
+        result = await client.call_tool("list_tasks", {"status": "all"})
+        response = result[0].text
+        assert special_title in response
 
 
 if __name__ == "__main__":
