@@ -536,7 +536,16 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
-app.mount("/mcp", app)
+# Add missing endpoints that Claude expects
+from starlette.responses import JSONResponse
+
+@app.route("/register", methods=["POST"])
+async def register_endpoint(request):
+    return JSONResponse({"status": "success"})
+
+@app.route("/.well-known/oauth-authorization-server", methods=["GET"])
+async def oauth_discovery(request):
+    return JSONResponse({"error": "not_supported"}, status_code=404)
 
 if __name__ == "__main__":
     # Auto-detect environment and run mode
