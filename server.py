@@ -5,7 +5,6 @@ Demonstrates all 3 MCP endpoint types: Tools, Resources, and Prompts
 """
 import os
 import uvicorn
-from fastapi import FastAPI
 from fastmcp import FastMCP
 import json
 from datetime import datetime, timedelta
@@ -535,3 +534,6 @@ if __name__ == "__main__":
         # For local development and MCP
         print("Starting MCP server locally...")
         mcp.run()
+
+# Expose FastAPI app for deployment (e.g., uvicorn server:app)
+app = mcp.transport("http")  # type: ignore
