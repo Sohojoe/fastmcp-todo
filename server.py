@@ -529,6 +529,7 @@ if __name__ == "__main__":
     port = os.getenv("PORT")
     if port:
         print(f"Starting MCP server on port {port}...")
+        port = int(port)
         # mcp.run(transport="http", host="0.0.0.0", port=int(port), path="/mcp")
         mcp_app = mcp.http_app(path='/mcp')
         app = FastAPI(lifespan=mcp_app.lifespan)  # KEY: Pass lifespan!
