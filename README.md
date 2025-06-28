@@ -46,4 +46,4 @@ uv run pytest
 
 ## Data Storage
 
-Todos are stored in `todos.json` in the project directory.
+Todos are stored in `tasks.json` in the project directory.
