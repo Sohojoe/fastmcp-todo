@@ -92,14 +92,24 @@ async def init_database():
 async def ensure_db_initialized():
     """Ensure database is initialized before performing operations."""
     if not _db_initialized:
-        await init_database()
+        try:
+            await init_database()
+        except RuntimeError as e:
+            if "Event loop is closed" in str(e):
+                print("⚠️ Event loop closed, skipping database initialization")
+                return
+            raise
 
 async def close_database():
     """Close database connections."""
     global db_pool
     if db_pool:
-        await db_pool.close()
-        db_pool = None
+        try:
+            await db_pool.close()
+        except Exception as e:
+            print(f"Warning: Error closing database pool: {e}")
+        finally:
+            db_pool = None
 
 def reset_database_state():
     """Reset database state for testing."""
@@ -203,17 +213,32 @@ def format_task_for_json(task: Dict[str, Any]) -> Dict[str, Any]:
 
 async def load_tasks() -> List[Dict[str, Any]]:
     """Load tasks from database or file."""
-    if USE_DATABASE:
-        tasks = await db_get_all_tasks()
-        return [format_task_for_json(task) for task in tasks]
-    else:
-        # File-based fallback
-        if TASKS_FILE.exists():
-            try:
-                return json.loads(TASKS_FILE.read_text())
-            except json.JSONDecodeError:
-                return []
-        return []
+    global USE_DATABASE
+    
+    try:
+        if USE_DATABASE:
+            tasks = await db_get_all_tasks()
+            return [format_task_for_json(task) for task in tasks]
+        else:
+            # File-based fallback
+            if TASKS_FILE.exists():
+                try:
+                    return json.loads(TASKS_FILE.read_text())
+                except json.JSONDecodeError:
+                    return []
+            return []
+    except RuntimeError as e:
+        if "Event loop is closed" in str(e):
+            print("⚠️ Event loop closed, falling back to file storage")
+            # Force file mode and retry
+            USE_DATABASE = False
+            if TASKS_FILE.exists():
+                try:
+                    return json.loads(TASKS_FILE.read_text())
+                except json.JSONDecodeError:
+                    return []
+            return []
+        raise
 
 async def save_tasks(tasks: List[Dict[str, Any]]):
     """Save tasks to database or file."""
@@ -790,7 +815,10 @@ async def startup():
 
 async def cleanup():
     """Clean up resources."""
-    await close_database()
+    try:
+        await close_database()
+    except Exception as e:
+        print(f"Warning: Error during cleanup: {e}")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
@@ -799,11 +827,23 @@ if __name__ == "__main__":
     
     if is_stdio_mode:
         # Run in stdio mode for local MCP clients
-        asyncio.run(startup())
+        print("🚀 Starting FastMCP Todo Server in STDIO mode (v2)...")
+        
+        # Initialize database in a separate asyncio context
+        try:
+            asyncio.run(startup())
+            print("✅ Database initialized")
+        except Exception as e:
+            print(f"⚠️ Database initialization warning: {e}")
+        
+        # Run MCP server (this handles its own event loop)
         try:
             mcp.run()
-        finally:
-            asyncio.run(cleanup())
+        except KeyboardInterrupt:
+            print("🛑 Server stopped by user")
+        except Exception as e:
+            print(f"❌ Server error: {e}")
+            
     else:
         # HTTP server mode
         print(f"Running MCP HTTP server on port {port}")
