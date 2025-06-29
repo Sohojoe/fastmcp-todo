@@ -11,23 +11,23 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastmcp import Client
-from server import mcp, load_tasks, save_tasks, TASKS_FILE, reset_database_state, close_database
+from server import mcp, load_tasks, TASKS_FILE, reset_storage_state, close_storage
 import server
 
 
 @pytest.fixture
 async def client():
     """Create a test client connected to the MCP server."""
-    # Ensure clean database state before each test
-    await close_database()
-    reset_database_state()
+    # Ensure clean storage state before each test
+    await close_storage()
+    reset_storage_state()
     
     async with Client(mcp) as client:
         yield client
     
     # Clean up after each test
-    await close_database()
-    reset_database_state()
+    await close_storage()
+    reset_storage_state()
 
 
 @pytest.fixture
@@ -37,26 +37,23 @@ def temp_tasks_file():
         temp_file = f.name
     
     # Store original values
-    original_file = TASKS_FILE
-    original_use_database = server.USE_DATABASE
+    original_file = server.TASKS_FILE
     original_database_url = server.DATABASE_URL
     
     # Force file mode for tests
-    server.TASKS_FILE = Path(temp_file)
-    server.USE_DATABASE = False
-    server.DATABASE_URL = None
+    server.TASKS_FILE = temp_file
+    server.DATABASE_URL = None  # This will force file storage
     
-    # Reset database state
-    reset_database_state()
+    # Reset storage state
+    reset_storage_state()
     
     try:
         yield temp_file
     finally:
         # Restore original values
         server.TASKS_FILE = original_file
-        server.USE_DATABASE = original_use_database
         server.DATABASE_URL = original_database_url
-        reset_database_state()
+        reset_storage_state()
         
         # Clean up temp file
         if os.path.exists(temp_file):
@@ -85,7 +82,10 @@ class TestTaskHelpers:
             }
         ]
         
-        await save_tasks(test_tasks)
+        # Write directly to file for testing
+        import json
+        from pathlib import Path
+        Path(temp_tasks_file).write_text(json.dumps(test_tasks, indent=2))
         loaded_tasks = await load_tasks()
         
         assert len(loaded_tasks) == 1

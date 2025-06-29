@@ -8,14 +8,11 @@ import os
 import sys
 import uvicorn
 from fastmcp import FastMCP
-import json
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Optional, List, Dict, Any
 import asyncio
-import asyncpg
-from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+from storage import StorageStrategy, StorageFactory
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,314 +20,73 @@ load_dotenv()
 mcp = FastMCP("complete-todo-server")
 
 # Configuration
-TASKS_FILE = Path("tasks.json")
 DATABASE_URL = os.getenv("DATABASE_URL")  # Railway provides this
-USE_DATABASE = DATABASE_URL is not None
+TABLE_NAME = os.getenv("TABLE_NAME", "tasks")  # Configurable table name
+TASKS_FILE = os.getenv("TASKS_FILE", "tasks.json")  # Configurable file path
 
-# Global database connection pool
-db_pool = None
-_db_initialized = False
+# Global storage strategy
+storage: Optional[StorageStrategy] = None
 
 # =============================================================================
-# DATABASE SETUP AND ABSTRACTIONS 
+# STORAGE INITIALIZATION
 # =============================================================================
 
-async def init_database():
-    """Initialize database connection and create tables if needed."""
-    global db_pool, USE_DATABASE, _db_initialized
-    
-    if _db_initialized:
-        return
-    
-    if not USE_DATABASE:
-        print("📁 Using file-based storage (tasks.json)")
-        _db_initialized = True
-        return
-    
-    try:
-        print("🐘 Connecting to PostgreSQL...")
-        # Create connection pool with more conservative settings for tests
-        db_pool = await asyncpg.create_pool(
-            DATABASE_URL, 
-            min_size=1, 
-            max_size=5,
-            command_timeout=5,
-            server_settings={
-                'application_name': 'fastmcp_todo'
-            }
+async def init_storage():
+    """Initialize storage strategy."""
+    global storage
+    if storage is None:
+        storage = StorageFactory.create_storage(
+            database_url=DATABASE_URL,
+            file_path=TASKS_FILE,
+            table_name=TABLE_NAME
         )
-        
-        # Test the connection and create tasks table if it doesn't exist
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS tasks (
-                    id SERIAL PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    priority TEXT NOT NULL DEFAULT 'medium',
-                    due_date TEXT,
-                    created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                    completed BOOLEAN NOT NULL DEFAULT FALSE,
-                    completed_at TIMESTAMP WITH TIME ZONE
-                )
-            """)
-        print("✅ PostgreSQL connected and initialized")
-        _db_initialized = True
-        
-    except Exception as e:
-        print(f"❌ Database connection failed: {e}")
-        print("📁 Falling back to file-based storage")
-        # Clean up any partial pool
-        if db_pool:
-            try:
-                await db_pool.close()
-            except:
-                pass
-            db_pool = None
-        USE_DATABASE = False
-        _db_initialized = True
+        await storage.initialize()
 
-async def ensure_db_initialized():
-    """Ensure database is initialized before performing operations."""
-    if not _db_initialized:
-        try:
-            await init_database()
-        except RuntimeError as e:
-            if "Event loop is closed" in str(e):
-                print("⚠️ Event loop closed, skipping database initialization")
-                return
-            raise
+async def close_storage():
+    """Close storage connections."""
+    global storage
+    if storage:
+        await storage.close()
+        storage = None
 
-async def close_database():
-    """Close database connections."""
-    global db_pool
-    if db_pool:
-        try:
-            await db_pool.close()
-        except Exception as e:
-            print(f"Warning: Error closing database pool: {e}")
-        finally:
-            db_pool = None
-
-def reset_database_state():
-    """Reset database state for testing."""
-    global _db_initialized, db_pool, USE_DATABASE
-    _db_initialized = False
-    if db_pool:
-        # Note: This should only be called when the event loop is about to be cleaned up
-        db_pool = None
-    # Reset USE_DATABASE to its original value
-    USE_DATABASE = DATABASE_URL is not None
-
-# Database operations
-async def db_add_task(title: str, priority: str = "medium", due_date: Optional[str] = None) -> Dict[str, Any]:
-    """Add task to database."""
-    await ensure_db_initialized()
-    assert db_pool is not None  # Only called when USE_DATABASE is True
-    async with db_pool.acquire() as conn:
-        task_id = await conn.fetchval("""
-            INSERT INTO tasks (title, priority, due_date)
-            VALUES ($1, $2, $3)
-            RETURNING id
-        """, title, priority, due_date)
-        
-        # Return the full task
-        return await conn.fetchrow("""
-            SELECT id, title, priority, due_date, created, completed, completed_at
-            FROM tasks WHERE id = $1
-        """, task_id)
-
-async def db_get_all_tasks() -> List[Dict[str, Any]]:
-    """Get all tasks from database."""
-    await ensure_db_initialized()
-    assert db_pool is not None  # Only called when USE_DATABASE is True
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT id, title, priority, due_date, created, completed, completed_at
-            FROM tasks
-            ORDER BY id
-        """)
-        return [dict(row) for row in rows]
-
-async def db_update_task_completed(task_id: int, completed: bool) -> bool:
-    """Update task completion status."""
-    await ensure_db_initialized()
-    assert db_pool is not None  # Only called when USE_DATABASE is True
-    async with db_pool.acquire() as conn:
-        completed_at = datetime.now() if completed else None
-        result = await conn.execute("""
-            UPDATE tasks 
-            SET completed = $1, completed_at = $2
-            WHERE id = $3
-        """, completed, completed_at, task_id)
-        return result != "UPDATE 0"
-
-async def db_delete_task(task_id: int) -> bool:
-    """Delete task from database."""
-    await ensure_db_initialized()
-    assert db_pool is not None  # Only called when USE_DATABASE is True
-    async with db_pool.acquire() as conn:
-        result = await conn.execute("DELETE FROM tasks WHERE id = $1", task_id)
-        return result != "DELETE 0"
-
-async def db_update_task_priority(task_id: int, priority: str) -> bool:
-    """Update task priority."""
-    await ensure_db_initialized()
-    assert db_pool is not None  # Only called when USE_DATABASE is True
-    async with db_pool.acquire() as conn:
-        result = await conn.execute("""
-            UPDATE tasks SET priority = $1 WHERE id = $2
-        """, priority, task_id)
-        return result != "UPDATE 0"
-
-async def db_get_task_by_id(task_id: int) -> Optional[Dict[str, Any]]:
-    """Get specific task by ID."""
-    await ensure_db_initialized()
-    assert db_pool is not None  # Only called when USE_DATABASE is True
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT id, title, priority, due_date, created, completed, completed_at
-            FROM tasks WHERE id = $1
-        """, task_id)
-        return dict(row) if row else None
+def reset_storage_state():
+    """Reset storage state for testing."""
+    global storage
+    storage = None
 
 # =============================================================================
-# UNIFIED DATA ACCESS LAYER
+# STORAGE WRAPPER FUNCTIONS
 # =============================================================================
-
-def format_task_for_json(task: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert database task to JSON-compatible format."""
-    if not USE_DATABASE:
-        return task
-    
-    # Convert datetime objects to ISO strings
-    formatted_task = task.copy()
-    if task.get('created') and hasattr(task['created'], 'isoformat'):
-        formatted_task['created'] = task['created'].isoformat()
-    if task.get('completed_at') and hasattr(task['completed_at'], 'isoformat'):
-        formatted_task['completed_at'] = task['completed_at'].isoformat()
-    
-    return formatted_task
 
 async def load_tasks() -> List[Dict[str, Any]]:
-    """Load tasks from database or file."""
-    global USE_DATABASE
-    
-    try:
-        if USE_DATABASE:
-            tasks = await db_get_all_tasks()
-            return [format_task_for_json(task) for task in tasks]
-        else:
-            # File-based fallback
-            if TASKS_FILE.exists():
-                try:
-                    return json.loads(TASKS_FILE.read_text())
-                except json.JSONDecodeError:
-                    return []
-            return []
-    except RuntimeError as e:
-        if "Event loop is closed" in str(e):
-            print("⚠️ Event loop closed, falling back to file storage")
-            # Force file mode and retry
-            USE_DATABASE = False
-            if TASKS_FILE.exists():
-                try:
-                    return json.loads(TASKS_FILE.read_text())
-                except json.JSONDecodeError:
-                    return []
-            return []
-        raise
-
-async def save_tasks(tasks: List[Dict[str, Any]]):
-    """Save tasks to database or file."""
-    if not USE_DATABASE:
-        # File-based fallback
-        TASKS_FILE.write_text(json.dumps(tasks, indent=2))
+    """Load all tasks using the storage strategy."""
+    await init_storage()
+    return await storage.get_all_tasks()
 
 async def add_task_to_storage(title: str, priority: str = "medium", due_date: Optional[str] = None) -> Dict[str, Any]:
-    """Add task to storage (database or file)."""
-    if USE_DATABASE:
-        task = await db_add_task(title, priority, due_date)
-        return format_task_for_json(dict(task))
-    else:
-        # File-based fallback
-        tasks = await load_tasks()
-        
-        # Find the highest existing ID and increment it
-        if tasks:
-            max_id = max(task["id"] for task in tasks)
-            new_id = max_id + 1
-        else:
-            new_id = 1
-        
-        task = {
-            "id": new_id,
-            "title": title,
-            "priority": priority,
-            "due_date": due_date,
-            "created": datetime.now().isoformat(),
-            "completed": False,
-            "completed_at": None
-        }
-        tasks.append(task)
-        await save_tasks(tasks)
-        return task
-
-async def update_task_completion(task_id: int, completed: bool) -> bool:
-    """Update task completion status."""
-    if USE_DATABASE:
-        return await db_update_task_completed(task_id, completed)
-    else:
-        # File-based fallback
-        tasks = await load_tasks()
-        for task in tasks:
-            if task["id"] == task_id:
-                task["completed"] = completed
-                task["completed_at"] = datetime.now().isoformat() if completed else None
-                await save_tasks(tasks)
-                return True
-        return False
-
-async def delete_task_from_storage(task_id: int) -> bool:
-    """Delete task from storage."""
-    if USE_DATABASE:
-        return await db_delete_task(task_id)
-    else:
-        # File-based fallback
-        tasks = await load_tasks()
-        original_count = len(tasks)
-        tasks = [task for task in tasks if task["id"] != task_id]
-        
-        if len(tasks) < original_count:
-            await save_tasks(tasks)
-            return True
-        return False
-
-async def update_task_priority_in_storage(task_id: int, priority: str) -> bool:
-    """Update task priority in storage."""
-    if USE_DATABASE:
-        return await db_update_task_priority(task_id, priority)
-    else:
-        # File-based fallback
-        tasks = await load_tasks()
-        for task in tasks:
-            if task["id"] == task_id:
-                task["priority"] = priority
-                await save_tasks(tasks)
-                return True
-        return False
+    """Add task using the storage strategy."""
+    await init_storage()
+    return await storage.add_task(title, priority, due_date)
 
 async def get_task_by_id(task_id: int) -> Optional[Dict[str, Any]]:
-    """Get task by ID from storage."""
-    if USE_DATABASE:
-        task = await db_get_task_by_id(task_id)
-        return format_task_for_json(task) if task else None
-    else:
-        # File-based fallback
-        tasks = await load_tasks()
-        for task in tasks:
-            if task["id"] == task_id:
-                return task
-        return None
+    """Get task by ID using the storage strategy."""
+    await init_storage()
+    return await storage.get_task_by_id(task_id)
+
+async def update_task_completion(task_id: int, completed: bool) -> bool:
+    """Update task completion using the storage strategy."""
+    await init_storage()
+    return await storage.update_task_completed(task_id, completed)
+
+async def delete_task_from_storage(task_id: int) -> bool:
+    """Delete task using the storage strategy."""
+    await init_storage()
+    return await storage.delete_task(task_id)
+
+async def update_task_priority_in_storage(task_id: int, priority: str) -> bool:
+    """Update task priority using the storage strategy."""
+    await init_storage()
+    return await storage.update_task_priority(task_id, priority)
 
 # =============================================================================
 # TOOLS (Actions - like POST endpoints)
@@ -408,7 +164,8 @@ async def list_tasks(status: str = "all") -> str:
             line += f" (Due: {task['due_date']})"
         task_lines.append(line)
     
-    storage_type = "PostgreSQL" if USE_DATABASE else "File"
+    await init_storage()
+    storage_type = storage.get_storage_type()
     header = f"📋 {status.title()} Tasks ({len(tasks)} total) [{storage_type}]:\n"
     return header + "\n".join(task_lines)
 
@@ -458,7 +215,7 @@ async def get_task_statistics() -> dict:
         "pending_tasks": pending,
         "completion_rate": round((completed / total * 100) if total > 0 else 0, 1),
         "priority_breakdown": priority_counts,
-        "storage_type": "PostgreSQL" if USE_DATABASE else "File"
+        "storage_type": storage.get_storage_type() if storage else "Unknown"
     }
 
 @mcp.resource("tasks://task/{task_id}")
@@ -630,7 +387,8 @@ Consider adding some new tasks or reviewing your weekly/monthly objectives.
         task_list.append(f"{priority_icon} [{task['id']}] {task['title']}{due_info}")
     
     tasks_text = "\n".join(task_list)
-    storage_type = "PostgreSQL" if USE_DATABASE else "File"
+    await init_storage()
+    storage_type = storage.get_storage_type()
     
     return f"""
 📅 **Smart Daily Planning** [{storage_type} Storage]
@@ -700,7 +458,8 @@ async def smart_prioritization_prompt() -> str:
     
     tasks_text = "\n".join(task_details)
     priority_text = "\n".join(priority_summary)
-    storage_type = "PostgreSQL" if USE_DATABASE else "File"
+    await init_storage()
+    storage_type = storage.get_storage_type()
     
     return f"""
 🎯 **Smart Task Prioritization Analysis** [{storage_type} Storage]
@@ -755,7 +514,8 @@ async def overdue_tasks_prompt() -> str:
                 continue  # Skip invalid dates
     
     if not overdue_tasks and not upcoming_tasks:
-        storage_type = "PostgreSQL" if USE_DATABASE else "File"
+        await init_storage()
+        storage_type = storage.get_storage_type()
         return f"""
 🌟 **Great News!** [{storage_type} Storage]
 
@@ -770,7 +530,8 @@ This is a good time to:
 Keep up the excellent time management! 
 """
     
-    storage_type = "PostgreSQL" if USE_DATABASE else "File"
+    await init_storage()
+    storage_type = storage.get_storage_type()
     content = f"⚠️ **Deadline Management Alert** [{storage_type} Storage]\n\n"
     
     if overdue_tasks:
@@ -811,12 +572,12 @@ Please provide a clear, actionable plan that helps me regain control of my deadl
 
 async def startup():
     """Initialize the application."""
-    await init_database()
+    await init_storage()
 
 async def cleanup():
     """Clean up resources."""
     try:
-        await close_database()
+        await close_storage()
     except Exception as e:
         print(f"Warning: Error during cleanup: {e}")
 
