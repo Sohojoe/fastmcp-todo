@@ -15,6 +15,10 @@ from typing import Optional, List, Dict, Any
 import asyncio
 import asyncpg
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 mcp = FastMCP("complete-todo-server")
 
@@ -25,6 +29,7 @@ USE_DATABASE = DATABASE_URL is not None
 
 # Global database connection pool
 db_pool = None
+_db_initialized = False
 
 # =============================================================================
 # DATABASE SETUP AND ABSTRACTIONS
@@ -32,17 +37,30 @@ db_pool = None
 
 async def init_database():
     """Initialize database connection and create tables if needed."""
-    global db_pool, USE_DATABASE
+    global db_pool, USE_DATABASE, _db_initialized
+    
+    if _db_initialized:
+        return
     
     if not USE_DATABASE:
         print("📁 Using file-based storage (tasks.json)")
+        _db_initialized = True
         return
     
     try:
         print("🐘 Connecting to PostgreSQL...")
-        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+        # Create connection pool with more conservative settings for tests
+        db_pool = await asyncpg.create_pool(
+            DATABASE_URL, 
+            min_size=1, 
+            max_size=5,
+            command_timeout=5,
+            server_settings={
+                'application_name': 'fastmcp_todo'
+            }
+        )
         
-        # Create tasks table if it doesn't exist
+        # Test the connection and create tasks table if it doesn't exist
         async with db_pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -56,21 +74,47 @@ async def init_database():
                 )
             """)
         print("✅ PostgreSQL connected and initialized")
+        _db_initialized = True
         
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
         print("📁 Falling back to file-based storage")
+        # Clean up any partial pool
+        if db_pool:
+            try:
+                await db_pool.close()
+            except:
+                pass
+            db_pool = None
         USE_DATABASE = False
+        _db_initialized = True
+
+async def ensure_db_initialized():
+    """Ensure database is initialized before performing operations."""
+    if not _db_initialized:
+        await init_database()
 
 async def close_database():
     """Close database connections."""
     global db_pool
     if db_pool:
         await db_pool.close()
+        db_pool = None
+
+def reset_database_state():
+    """Reset database state for testing."""
+    global _db_initialized, db_pool, USE_DATABASE
+    _db_initialized = False
+    if db_pool:
+        # Note: This should only be called when the event loop is about to be cleaned up
+        db_pool = None
+    # Reset USE_DATABASE to its original value
+    USE_DATABASE = DATABASE_URL is not None
 
 # Database operations
 async def db_add_task(title: str, priority: str = "medium", due_date: Optional[str] = None) -> Dict[str, Any]:
     """Add task to database."""
+    await ensure_db_initialized()
     assert db_pool is not None  # Only called when USE_DATABASE is True
     async with db_pool.acquire() as conn:
         task_id = await conn.fetchval("""
@@ -87,6 +131,7 @@ async def db_add_task(title: str, priority: str = "medium", due_date: Optional[s
 
 async def db_get_all_tasks() -> List[Dict[str, Any]]:
     """Get all tasks from database."""
+    await ensure_db_initialized()
     assert db_pool is not None  # Only called when USE_DATABASE is True
     async with db_pool.acquire() as conn:
         rows = await conn.fetch("""
@@ -98,6 +143,7 @@ async def db_get_all_tasks() -> List[Dict[str, Any]]:
 
 async def db_update_task_completed(task_id: int, completed: bool) -> bool:
     """Update task completion status."""
+    await ensure_db_initialized()
     assert db_pool is not None  # Only called when USE_DATABASE is True
     async with db_pool.acquire() as conn:
         completed_at = datetime.now() if completed else None
@@ -110,6 +156,7 @@ async def db_update_task_completed(task_id: int, completed: bool) -> bool:
 
 async def db_delete_task(task_id: int) -> bool:
     """Delete task from database."""
+    await ensure_db_initialized()
     assert db_pool is not None  # Only called when USE_DATABASE is True
     async with db_pool.acquire() as conn:
         result = await conn.execute("DELETE FROM tasks WHERE id = $1", task_id)
@@ -117,6 +164,7 @@ async def db_delete_task(task_id: int) -> bool:
 
 async def db_update_task_priority(task_id: int, priority: str) -> bool:
     """Update task priority."""
+    await ensure_db_initialized()
     assert db_pool is not None  # Only called when USE_DATABASE is True
     async with db_pool.acquire() as conn:
         result = await conn.execute("""
@@ -126,6 +174,7 @@ async def db_update_task_priority(task_id: int, priority: str) -> bool:
 
 async def db_get_task_by_id(task_id: int) -> Optional[Dict[str, Any]]:
     """Get specific task by ID."""
+    await ensure_db_initialized()
     assert db_pool is not None  # Only called when USE_DATABASE is True
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("""
