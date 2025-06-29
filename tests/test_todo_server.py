@@ -43,10 +43,10 @@ def temp_tasks_file():
 class TestTaskHelpers:
     """Test the helper functions directly."""
     
-    def test_load_save_tasks(self, temp_tasks_file):
+    async def test_load_save_tasks(self, temp_tasks_file):
         """Test loading and saving tasks."""
         # Test loading empty file
-        tasks = load_tasks()
+        tasks = await load_tasks()
         assert tasks == []
         
         # Test saving and loading tasks
@@ -62,8 +62,8 @@ class TestTaskHelpers:
             }
         ]
         
-        save_tasks(test_tasks)
-        loaded_tasks = load_tasks()
+        await save_tasks(test_tasks)
+        loaded_tasks = await load_tasks()
         
         assert len(loaded_tasks) == 1
         assert loaded_tasks[0]["title"] == "Test Task"
@@ -88,7 +88,7 @@ class TestMCPTools:
         assert "Priority: high" in response
         
         # Verify task was saved
-        tasks = load_tasks()
+        tasks = await load_tasks()
         assert len(tasks) == 1
         assert tasks[0]["title"] == "Test Task via MCP"
         assert tasks[0]["priority"] == "high"
@@ -104,7 +104,7 @@ class TestMCPTools:
         response = result[0].text
         assert "Priority: medium" in response
         
-        tasks = load_tasks()
+        tasks = await load_tasks()
         assert tasks[0]["priority"] == "medium"
     
     async def test_complete_task_tool(self, client, temp_tasks_file):
@@ -123,7 +123,7 @@ class TestMCPTools:
         assert "🎉 Completed task: 'Task to Complete'" in response
         
         # Verify task is marked completed
-        tasks = load_tasks()
+        tasks = await load_tasks()
         assert tasks[0]["completed"] is True
         assert tasks[0]["completed_at"] is not None
     
@@ -152,7 +152,7 @@ class TestMCPTools:
         assert "🗑️ Deleted task 1" in response
         
         # Verify task is deleted
-        tasks = load_tasks()
+        tasks = await load_tasks()
         assert len(tasks) == 0
     
     async def test_delete_nonexistent_task(self, client, temp_tasks_file):
@@ -182,7 +182,7 @@ class TestMCPTools:
         assert "📝 Updated priority for 'Task to Update' to urgent" in response
         
         # Verify priority was updated
-        tasks = load_tasks()
+        tasks = await load_tasks()
         assert tasks[0]["priority"] == "urgent"
     
     async def test_update_task_invalid_priority(self, client, temp_tasks_file):
@@ -209,7 +209,7 @@ class TestMCPTools:
         result = await client.call_tool("list_tasks", {"status": "all"})
         response = result[0].text
         
-        assert "📋 All Tasks (2 total):" in response
+        assert "📋 All Tasks (2 total)" in response
         assert "Pending Task" in response
         assert "Task to Complete" in response
         assert "🟠" in response  # High priority icon
@@ -219,7 +219,7 @@ class TestMCPTools:
         result = await client.call_tool("list_tasks", {"status": "pending"})
         response = result[0].text
         
-        assert "📋 Pending Tasks (1 total):" in response
+        assert "📋 Pending Tasks (1 total)" in response
         assert "Pending Task" in response
         assert "Task to Complete" not in response  # Should be filtered out
         
@@ -227,7 +227,7 @@ class TestMCPTools:
         result = await client.call_tool("list_tasks", {"status": "completed"})
         response = result[0].text
         
-        assert "📋 Completed Tasks (1 total):" in response
+        assert "📋 Completed Tasks (1 total)" in response
         assert "Task to Complete" in response
         assert "Pending Task" not in response  # Should be filtered out
     
@@ -287,7 +287,7 @@ class TestMCPTools:
         # Add a new task - should get ID 4, not reuse ID 2
         await client.call_tool("add_task", {"title": "Task 4"})
         
-        tasks = load_tasks()
+        tasks = await load_tasks()
         task_ids = [task["id"] for task in tasks]
         assert 4 in task_ids  # New task should have ID 4
         assert 2 not in task_ids  # ID 2 should not be reused
@@ -334,7 +334,7 @@ class TestMCPTools:
             f.write('{"invalid": json}')
         
         # Should return empty list instead of crashing
-        tasks = load_tasks()
+        tasks = await load_tasks()
         assert tasks == []
     
     async def test_integration_workflow(self, client, temp_tasks_file):
@@ -718,7 +718,7 @@ class TestEdgeCases:
         assert "✅ Added task:" in response
         
         # Verify it was saved correctly
-        tasks = load_tasks()
+        tasks = await load_tasks()
         assert tasks[0]["title"] == long_title
     
     async def test_special_characters_in_title(self, client, temp_tasks_file):

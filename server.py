@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Complete Todo MCP Server
+Complete Todo MCP Server with PostgreSQL support
 Demonstrates all 3 MCP endpoint types: Tools, Resources, and Prompts
+Uses PostgreSQL when available (Railway), falls back to file storage locally
 """
 import os
 import sys
@@ -10,88 +11,309 @@ from fastmcp import FastMCP
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
+import asyncio
+import asyncpg
+from contextlib import asynccontextmanager
 
 mcp = FastMCP("complete-todo-server")
 
+# Configuration
 TASKS_FILE = Path("tasks.json")
+DATABASE_URL = os.getenv("DATABASE_URL")  # Railway provides this
+USE_DATABASE = DATABASE_URL is not None
+
+# Global database connection pool
+db_pool = None
+
+# =============================================================================
+# DATABASE SETUP AND ABSTRACTIONS
+# =============================================================================
+
+async def init_database():
+    """Initialize database connection and create tables if needed."""
+    global db_pool, USE_DATABASE
+    
+    if not USE_DATABASE:
+        print("📁 Using file-based storage (tasks.json)")
+        return
+    
+    try:
+        print("🐘 Connecting to PostgreSQL...")
+        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+        
+        # Create tasks table if it doesn't exist
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    priority TEXT NOT NULL DEFAULT 'medium',
+                    due_date TEXT,
+                    created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    completed BOOLEAN NOT NULL DEFAULT FALSE,
+                    completed_at TIMESTAMP WITH TIME ZONE
+                )
+            """)
+        print("✅ PostgreSQL connected and initialized")
+        
+    except Exception as e:
+        print(f"❌ Database connection failed: {e}")
+        print("📁 Falling back to file-based storage")
+        USE_DATABASE = False
+
+async def close_database():
+    """Close database connections."""
+    global db_pool
+    if db_pool:
+        await db_pool.close()
+
+# Database operations
+async def db_add_task(title: str, priority: str = "medium", due_date: Optional[str] = None) -> Dict[str, Any]:
+    """Add task to database."""
+    assert db_pool is not None  # Only called when USE_DATABASE is True
+    async with db_pool.acquire() as conn:
+        task_id = await conn.fetchval("""
+            INSERT INTO tasks (title, priority, due_date)
+            VALUES ($1, $2, $3)
+            RETURNING id
+        """, title, priority, due_date)
+        
+        # Return the full task
+        return await conn.fetchrow("""
+            SELECT id, title, priority, due_date, created, completed, completed_at
+            FROM tasks WHERE id = $1
+        """, task_id)
+
+async def db_get_all_tasks() -> List[Dict[str, Any]]:
+    """Get all tasks from database."""
+    assert db_pool is not None  # Only called when USE_DATABASE is True
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, title, priority, due_date, created, completed, completed_at
+            FROM tasks
+            ORDER BY id
+        """)
+        return [dict(row) for row in rows]
+
+async def db_update_task_completed(task_id: int, completed: bool) -> bool:
+    """Update task completion status."""
+    assert db_pool is not None  # Only called when USE_DATABASE is True
+    async with db_pool.acquire() as conn:
+        completed_at = datetime.now() if completed else None
+        result = await conn.execute("""
+            UPDATE tasks 
+            SET completed = $1, completed_at = $2
+            WHERE id = $3
+        """, completed, completed_at, task_id)
+        return result != "UPDATE 0"
+
+async def db_delete_task(task_id: int) -> bool:
+    """Delete task from database."""
+    assert db_pool is not None  # Only called when USE_DATABASE is True
+    async with db_pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM tasks WHERE id = $1", task_id)
+        return result != "DELETE 0"
+
+async def db_update_task_priority(task_id: int, priority: str) -> bool:
+    """Update task priority."""
+    assert db_pool is not None  # Only called when USE_DATABASE is True
+    async with db_pool.acquire() as conn:
+        result = await conn.execute("""
+            UPDATE tasks SET priority = $1 WHERE id = $2
+        """, priority, task_id)
+        return result != "UPDATE 0"
+
+async def db_get_task_by_id(task_id: int) -> Optional[Dict[str, Any]]:
+    """Get specific task by ID."""
+    assert db_pool is not None  # Only called when USE_DATABASE is True
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT id, title, priority, due_date, created, completed, completed_at
+            FROM tasks WHERE id = $1
+        """, task_id)
+        return dict(row) if row else None
+
+# =============================================================================
+# UNIFIED DATA ACCESS LAYER
+# =============================================================================
+
+def format_task_for_json(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert database task to JSON-compatible format."""
+    if not USE_DATABASE:
+        return task
+    
+    # Convert datetime objects to ISO strings
+    formatted_task = task.copy()
+    if task.get('created') and hasattr(task['created'], 'isoformat'):
+        formatted_task['created'] = task['created'].isoformat()
+    if task.get('completed_at') and hasattr(task['completed_at'], 'isoformat'):
+        formatted_task['completed_at'] = task['completed_at'].isoformat()
+    
+    return formatted_task
+
+async def load_tasks() -> List[Dict[str, Any]]:
+    """Load tasks from database or file."""
+    if USE_DATABASE:
+        tasks = await db_get_all_tasks()
+        return [format_task_for_json(task) for task in tasks]
+    else:
+        # File-based fallback
+        if TASKS_FILE.exists():
+            try:
+                return json.loads(TASKS_FILE.read_text())
+            except json.JSONDecodeError:
+                return []
+        return []
+
+async def save_tasks(tasks: List[Dict[str, Any]]):
+    """Save tasks to database or file."""
+    if not USE_DATABASE:
+        # File-based fallback
+        TASKS_FILE.write_text(json.dumps(tasks, indent=2))
+
+async def add_task_to_storage(title: str, priority: str = "medium", due_date: Optional[str] = None) -> Dict[str, Any]:
+    """Add task to storage (database or file)."""
+    if USE_DATABASE:
+        task = await db_add_task(title, priority, due_date)
+        return format_task_for_json(dict(task))
+    else:
+        # File-based fallback
+        tasks = await load_tasks()
+        
+        # Find the highest existing ID and increment it
+        if tasks:
+            max_id = max(task["id"] for task in tasks)
+            new_id = max_id + 1
+        else:
+            new_id = 1
+        
+        task = {
+            "id": new_id,
+            "title": title,
+            "priority": priority,
+            "due_date": due_date,
+            "created": datetime.now().isoformat(),
+            "completed": False,
+            "completed_at": None
+        }
+        tasks.append(task)
+        await save_tasks(tasks)
+        return task
+
+async def update_task_completion(task_id: int, completed: bool) -> bool:
+    """Update task completion status."""
+    if USE_DATABASE:
+        return await db_update_task_completed(task_id, completed)
+    else:
+        # File-based fallback
+        tasks = await load_tasks()
+        for task in tasks:
+            if task["id"] == task_id:
+                task["completed"] = completed
+                task["completed_at"] = datetime.now().isoformat() if completed else None
+                await save_tasks(tasks)
+                return True
+        return False
+
+async def delete_task_from_storage(task_id: int) -> bool:
+    """Delete task from storage."""
+    if USE_DATABASE:
+        return await db_delete_task(task_id)
+    else:
+        # File-based fallback
+        tasks = await load_tasks()
+        original_count = len(tasks)
+        tasks = [task for task in tasks if task["id"] != task_id]
+        
+        if len(tasks) < original_count:
+            await save_tasks(tasks)
+            return True
+        return False
+
+async def update_task_priority_in_storage(task_id: int, priority: str) -> bool:
+    """Update task priority in storage."""
+    if USE_DATABASE:
+        return await db_update_task_priority(task_id, priority)
+    else:
+        # File-based fallback
+        tasks = await load_tasks()
+        for task in tasks:
+            if task["id"] == task_id:
+                task["priority"] = priority
+                await save_tasks(tasks)
+                return True
+        return False
+
+async def get_task_by_id(task_id: int) -> Optional[Dict[str, Any]]:
+    """Get task by ID from storage."""
+    if USE_DATABASE:
+        task = await db_get_task_by_id(task_id)
+        return format_task_for_json(task) if task else None
+    else:
+        # File-based fallback
+        tasks = await load_tasks()
+        for task in tasks:
+            if task["id"] == task_id:
+                return task
+        return None
 
 # =============================================================================
 # TOOLS (Actions - like POST endpoints)
 # =============================================================================
 
 @mcp.tool()
-def add_task(title: str, priority: str = "medium", due_date: Optional[str] = None) -> str:
+async def add_task(title: str, priority: str = "medium", due_date: Optional[str] = None) -> str:
     """Add a new task to the todo list."""
-    tasks = load_tasks()
-    
-    # Find the highest existing ID and increment it
-    if tasks:
-        max_id = max(task["id"] for task in tasks)
-        new_id = max_id + 1
-    else:
-        new_id = 1
-    
-    task = {
-        "id": new_id,
-        "title": title,
-        "priority": priority,
-        "due_date": due_date,
-        "created": datetime.now().isoformat(),
-        "completed": False,
-        "completed_at": None
-    }
-    tasks.append(task)
-    save_tasks(tasks)
-    return f"✅ Added task: '{title}' (Priority: {priority})"
+    task = await add_task_to_storage(title, priority, due_date)
+    return f"✅ Added task: '{title}' (Priority: {priority}) [ID: {task['id']}]"
 
 @mcp.tool()
-def complete_task(task_id: int) -> str:
+async def complete_task(task_id: int) -> str:
     """Mark a task as completed."""
-    tasks = load_tasks()
-    for task in tasks:
-        if task["id"] == task_id:
-            task["completed"] = True
-            task["completed_at"] = datetime.now().isoformat()
-            save_tasks(tasks)
-            return f"🎉 Completed task: '{task['title']}'"
-    return f"❌ Task {task_id} not found"
+    # Get task details first
+    task = await get_task_by_id(task_id)
+    if not task:
+        return f"❌ Task {task_id} not found"
+    
+    success = await update_task_completion(task_id, True)
+    if success:
+        return f"🎉 Completed task: '{task['title']}'"
+    return f"❌ Failed to complete task {task_id}"
 
 @mcp.tool()
-def delete_task(task_id: int) -> str:
+async def delete_task(task_id: int) -> str:
     """Delete a task from the todo list."""
-    tasks = load_tasks()
-    original_count = len(tasks)
-    tasks = [task for task in tasks if task["id"] != task_id]
-    
-    if len(tasks) < original_count:
-        save_tasks(tasks)
+    success = await delete_task_from_storage(task_id)
+    if success:
         return f"🗑️ Deleted task {task_id}"
     return f"❌ Task {task_id} not found"
 
 @mcp.tool()
-def update_task_priority(task_id: int, priority: str) -> str:
+async def update_task_priority(task_id: int, priority: str) -> str:
     """Update the priority of a task."""
     valid_priorities = ["low", "medium", "high", "urgent"]
     if priority not in valid_priorities:
         return f"❌ Priority must be one of: {', '.join(valid_priorities)}"
     
-    tasks = load_tasks()
-    for task in tasks:
-        if task["id"] == task_id:
-            task["priority"] = priority
-            save_tasks(tasks)
-            return f"📝 Updated priority for '{task['title']}' to {priority}"
-    return f"❌ Task {task_id} not found"
+    # Get task details first
+    task = await get_task_by_id(task_id)
+    if not task:
+        return f"❌ Task {task_id} not found"
+    
+    success = await update_task_priority_in_storage(task_id, priority)
+    if success:
+        return f"📝 Updated priority for '{task['title']}' to {priority}"
+    return f"❌ Failed to update task {task_id}"
 
 @mcp.tool()
-def list_tasks(status: str = "all") -> str:
+async def list_tasks(status: str = "all") -> str:
     """List tasks with optional status filter."""
     valid_statuses = ["all", "pending", "completed"]
     if status not in valid_statuses:
         return f"❌ Status must be one of: {', '.join(valid_statuses)}"
     
-    tasks = load_tasks()
+    tasks = await load_tasks()
     
     if status == "pending":
         tasks = [task for task in tasks if not task["completed"]]
@@ -112,7 +334,8 @@ def list_tasks(status: str = "all") -> str:
             line += f" (Due: {task['due_date']})"
         task_lines.append(line)
     
-    header = f"📋 {status.title()} Tasks ({len(tasks)} total):\n"
+    storage_type = "PostgreSQL" if USE_DATABASE else "File"
+    header = f"📋 {status.title()} Tasks ({len(tasks)} total) [{storage_type}]:\n"
     return header + "\n".join(task_lines)
 
 # =============================================================================
@@ -120,32 +343,32 @@ def list_tasks(status: str = "all") -> str:
 # =============================================================================
 
 @mcp.resource("tasks://all")
-def get_all_tasks() -> list:
+async def get_all_tasks() -> list:
     """Get all tasks in the todo list."""
-    return load_tasks()
+    return await load_tasks()
 
 @mcp.resource("tasks://pending")
-def get_pending_tasks() -> list:
+async def get_pending_tasks() -> list:
     """Get all uncompleted tasks."""
-    tasks = load_tasks()
+    tasks = await load_tasks()
     return [task for task in tasks if not task["completed"]]
 
 @mcp.resource("tasks://completed")
-def get_completed_tasks() -> list:
+async def get_completed_tasks() -> list:
     """Get all completed tasks."""
-    tasks = load_tasks()
+    tasks = await load_tasks()
     return [task for task in tasks if task["completed"]]
 
 @mcp.resource("tasks://priority/{priority}")
-def get_tasks_by_priority(priority: str) -> list:
+async def get_tasks_by_priority(priority: str) -> list:
     """Get tasks filtered by priority level."""
-    tasks = load_tasks()
+    tasks = await load_tasks()
     return [task for task in tasks if task["priority"] == priority]
 
 @mcp.resource("tasks://stats")
-def get_task_statistics() -> dict:
+async def get_task_statistics() -> dict:
     """Get statistics about tasks."""
-    tasks = load_tasks()
+    tasks = await load_tasks()
     total = len(tasks)
     completed = len([t for t in tasks if t["completed"]])
     pending = total - completed
@@ -160,23 +383,22 @@ def get_task_statistics() -> dict:
         "completed_tasks": completed,
         "pending_tasks": pending,
         "completion_rate": round((completed / total * 100) if total > 0 else 0, 1),
-        "priority_breakdown": priority_counts
+        "priority_breakdown": priority_counts,
+        "storage_type": "PostgreSQL" if USE_DATABASE else "File"
     }
 
 @mcp.resource("tasks://task/{task_id}")
-def get_task_details(task_id: str) -> dict:
+async def get_task_details(task_id: str) -> dict:
     """Get detailed information about a specific task."""
-    tasks = load_tasks()
-    
     # Handle invalid task ID format gracefully
     try:
         task_id_int = int(task_id)
     except ValueError:
         return {"error": f"Invalid task ID format: '{task_id}'. Task ID must be a number."}
     
-    for task in tasks:
-        if task["id"] == task_id_int:
-            return task
+    task = await get_task_by_id(task_id_int)
+    if task:
+        return task
     
     return {"error": f"Task {task_id} not found"}
 
@@ -301,9 +523,9 @@ Please provide specific, actionable insights to help me improve my productivity.
 """
 
 @mcp.prompt()
-def smart_daily_planning_prompt() -> str:
+async def smart_daily_planning_prompt() -> str:
     """Generate a smart daily planning prompt using actual task data."""
-    tasks = load_tasks()
+    tasks = await load_tasks()
     pending_tasks = [task for task in tasks if not task["completed"]]
     
     if not pending_tasks:
@@ -334,9 +556,10 @@ Consider adding some new tasks or reviewing your weekly/monthly objectives.
         task_list.append(f"{priority_icon} [{task['id']}] {task['title']}{due_info}")
     
     tasks_text = "\n".join(task_list)
+    storage_type = "PostgreSQL" if USE_DATABASE else "File"
     
     return f"""
-📅 **Smart Daily Planning**
+📅 **Smart Daily Planning** [{storage_type} Storage]
 
 Here are your pending tasks, sorted by priority and due date:
 
@@ -360,9 +583,9 @@ Consider that I'm most productive in the morning for complex work, and afternoon
 """
 
 @mcp.prompt()
-def smart_prioritization_prompt() -> str:
+async def smart_prioritization_prompt() -> str:
     """Generate a smart prioritization prompt using actual task data and statistics."""
-    tasks = load_tasks()
+    tasks = await load_tasks()
     pending_tasks = [task for task in tasks if not task["completed"]]
     
     if not pending_tasks:
@@ -394,14 +617,19 @@ def smart_prioritization_prompt() -> str:
     for task in pending_tasks:
         priority_icon = {"low": "🔵", "medium": "🟡", "high": "🟠", "urgent": "🔴"}.get(task["priority"], "⚪")
         due_info = f" | Due: {task['due_date']}" if task["due_date"] else ""
-        created_date = task["created"][:10]  # Just the date part
+        # Handle both string and datetime created fields
+        created_str = task["created"]
+        if hasattr(created_str, 'isoformat'):
+            created_str = created_str.isoformat()
+        created_date = created_str[:10] if created_str else "Unknown"
         task_details.append(f"{priority_icon} [{task['id']}] {task['title']} | Priority: {task['priority']}{due_info} | Created: {created_date}")
     
     tasks_text = "\n".join(task_details)
     priority_text = "\n".join(priority_summary)
+    storage_type = "PostgreSQL" if USE_DATABASE else "File"
     
     return f"""
-🎯 **Smart Task Prioritization Analysis**
+🎯 **Smart Task Prioritization Analysis** [{storage_type} Storage]
 
 **Current Task Overview:**
 - Total pending tasks: {total_pending}
@@ -433,9 +661,9 @@ Focus on actionable insights that will improve my productivity and reduce overwh
 """
 
 @mcp.prompt()
-def overdue_tasks_prompt() -> str:
+async def overdue_tasks_prompt() -> str:
     """Generate a prompt for handling overdue tasks."""
-    tasks = load_tasks()
+    tasks = await load_tasks()
     today = datetime.now().date()
     
     overdue_tasks = []
@@ -453,8 +681,9 @@ def overdue_tasks_prompt() -> str:
                 continue  # Skip invalid dates
     
     if not overdue_tasks and not upcoming_tasks:
-        return """
-🌟 **Great News!**
+        storage_type = "PostgreSQL" if USE_DATABASE else "File"
+        return f"""
+🌟 **Great News!** [{storage_type} Storage]
 
 You have no overdue tasks and nothing urgent coming up in the next few days!
 
@@ -467,7 +696,8 @@ This is a good time to:
 Keep up the excellent time management! 
 """
     
-    content = "⚠️ **Deadline Management Alert**\n\n"
+    storage_type = "PostgreSQL" if USE_DATABASE else "File"
+    content = f"⚠️ **Deadline Management Alert** [{storage_type} Storage]\n\n"
     
     if overdue_tasks:
         content += f"**🚨 Overdue Tasks ({len(overdue_tasks)}):**\n"
@@ -502,21 +732,16 @@ Please provide a clear, actionable plan that helps me regain control of my deadl
     return content
 
 # =============================================================================
-# Helper Functions
+# STARTUP AND CLEANUP
 # =============================================================================
 
-def load_tasks():
-    """Load tasks from JSON file."""
-    if TASKS_FILE.exists():
-        try:
-            return json.loads(TASKS_FILE.read_text())
-        except json.JSONDecodeError:
-            return []
-    return []
+async def startup():
+    """Initialize the application."""
+    await init_database()
 
-def save_tasks(tasks):
-    """Save tasks to JSON file."""
-    TASKS_FILE.write_text(json.dumps(tasks, indent=2))
+async def cleanup():
+    """Clean up resources."""
+    await close_database()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
@@ -525,16 +750,25 @@ if __name__ == "__main__":
     
     if is_stdio_mode:
         # Run in stdio mode for local MCP clients
-        mcp.run()
+        asyncio.run(startup())
+        try:
+            mcp.run()
+        finally:
+            asyncio.run(cleanup())
     else:
-        # Simple approach: run on root path
+        # HTTP server mode
         print(f"Running MCP HTTP server on port {port}")
-        import asyncio
-        asyncio.run(
-            mcp.run_http_async(
-                host="0.0.0.0",
-                port=port,
-                path="/",  # Run on root instead of /mcp/
-                log_level="debug"
-            )
-        )
+        
+        async def run_server():
+            await startup()
+            try:
+                await mcp.run_http_async(
+                    host="0.0.0.0",
+                    port=port,
+                    path="/",
+                    log_level="debug"
+                )
+            finally:
+                await cleanup()
+        
+        asyncio.run(run_server())

@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=2.9.2",
+    "asyncpg>=0.29.0"
 ]
 
 [build-system]
