@@ -32,7 +32,7 @@ db_pool = None
 _db_initialized = False
 
 # =============================================================================
-# DATABASE SETUP AND ABSTRACTIONS
+# DATABASE SETUP AND ABSTRACTIONS 
 # =============================================================================
 
 async def init_database():

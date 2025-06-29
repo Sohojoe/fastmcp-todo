@@ -1,0 +1,1 @@
+look at CLAUDE.MD in the root folder

@@ -1,5 +1,1 @@
-## debug
-
-``` bash
-uv run pytest -v
-```
+# copilot intructions
