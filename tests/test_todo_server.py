@@ -11,31 +11,54 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastmcp import Client
-from server import mcp, load_tasks, save_tasks, TASKS_FILE
+from server import mcp, load_tasks, save_tasks, TASKS_FILE, reset_database_state, close_database
+import server
 
 
 @pytest.fixture
 async def client():
     """Create a test client connected to the MCP server."""
+    # Ensure clean database state before each test
+    await close_database()
+    reset_database_state()
+    
     async with Client(mcp) as client:
         yield client
+    
+    # Clean up after each test
+    await close_database()
+    reset_database_state()
 
 
 @pytest.fixture
 def temp_tasks_file():
-    """Create a temporary tasks file for testing."""
+    """Create a temporary tasks file for testing and force file mode."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         temp_file = f.name
     
-    # Patch the TASKS_FILE global to use our temp file
+    # Store original values
     original_file = TASKS_FILE
-    import server
+    original_use_database = server.USE_DATABASE
+    original_database_url = server.DATABASE_URL
+    
+    # Force file mode for tests
     server.TASKS_FILE = Path(temp_file)
+    server.USE_DATABASE = False
+    server.DATABASE_URL = None
+    
+    # Reset database state
+    reset_database_state()
     
     try:
         yield temp_file
     finally:
+        # Restore original values
         server.TASKS_FILE = original_file
+        server.USE_DATABASE = original_use_database
+        server.DATABASE_URL = original_database_url
+        reset_database_state()
+        
+        # Clean up temp file
         if os.path.exists(temp_file):
             os.unlink(temp_file)
 
